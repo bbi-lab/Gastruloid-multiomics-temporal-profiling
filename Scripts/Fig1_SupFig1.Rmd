@@ -1,0 +1,397 @@
+---
+title: "Fig1_SupFig1"
+output: html_document
+date: "2024-08-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(ggrastr)
+library(cowplot)
+library(RColorBrewer)
+library(ggplot2)
+library(ggridges)
+library(ggpmisc)
+library(GGally)
+library(psych)
+library(ggpubr)
+library(reshape2)
+library(cowplot)
+library(umap)
+library(EnvStats)
+library(metR)
+library(conflicted)
+library(pheatmap)
+library(igraph)
+theme_set(theme_cowplot(rel_small = 10/12) + theme(axis.line = element_line(linewidth = .25), axis.ticks = element_line(linewidth = .25)))
+#setwd("/path/to/data")
+
+```
+
+```{r Functions}
+### RNA heatmap function
+make_temporal_heatmap_rna <- function(df, gene_list, outfile, cell_height, cell_width, species = 'both', clust_rows = TRUE) {
+  gene_list <- unlist(str_split(gene_list, pattern = ' '))
+  print(gene_list)
+  color_scale <- seq(-2, 2, by = .01)
+  if (species =='both'){
+    df %>% filter(symbol %in% gene_list) %>%
+      select(contains('_r_rep')) %>% as.matrix() -> rna_matrix_for_heatmap
+    rownames(rna_matrix_for_heatmap) <- df %>% filter(symbol %in% gene_list) %>% .$symbol
+    print(rna_matrix_for_heatmap)
+    sample_groups <- ifelse(grepl("^h", colnames(rna_matrix_for_heatmap)), "h", "m")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_r_", "", colnames(rna_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(rna_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(rna_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(rna_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(rna_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human", "mouse"), c(10, 8)))
+    row.names(sample_groups) <- colnames(rna_matrix_for_heatmap)
+  } else if (species == 'human') {
+    df %>% filter(symbol %in% gene_list) %>%
+      select(starts_with('h')) %>% select(contains('_r_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> rna_matrix_for_heatmap
+    rownames(rna_matrix_for_heatmap) <- df %>% filter(symbol %in% gene_list) %>% .$symbol
+    sample_groups <- ifelse(grepl("^h", colnames(rna_matrix_for_heatmap)), "h", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_r_", "", colnames(rna_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(rna_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(rna_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(rna_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(rna_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human"), c(10)))
+    row.names(sample_groups) <- colnames(rna_matrix_for_heatmap)
+  } else if (species == 'mouse') {
+    df %>% filter(symbol.y %in% gene_list) %>% 
+      select(starts_with('m')) %>% select(contains('_r_rep')) %>% as.matrix() -> rna_matrix_for_heatmap
+    rownames(rna_matrix_for_heatmap) <- df %>% filter(symbol.y %in% gene_list) %>% .$symbol.y
+    sample_groups <- ifelse(grepl("^m", colnames(rna_matrix_for_heatmap)), "m", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_r_", "", colnames(rna_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(rna_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(rna_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(rna_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(rna_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("mouse"), c(8)))
+    row.names(sample_groups) <- colnames(rna_matrix_for_heatmap)    
+    }
+  rna_matrix_for_heatmap <- rna_matrix_for_heatmap[gene_list, ]
+  pheatmap(rna_matrix_for_heatmap, cluster_rows = clust_rows, cluster_cols = FALSE, show_rownames = TRUE, show_colnames = TRUE, 
+           color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)), breaks = color_scale, annotation_col = sample_groups,
+           annotation_colors = list(Species = c(human = "#2E3192", mouse = "#00AEEF"),
+                                    Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9'),
+                                    Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), legend = TRUE,
+           width=10, height=10, cellwidth = cell_width, cellheight = cell_height, angle_col = 90,  
+           filename = paste0(outfile, '.pdf')) -> pheatmap_plot
+  graphics.off()
+  return(pheatmap_plot)
+}
+
+### Protein heatmap function
+make_temporal_heatmap <- function(df, gene_list, outfile, cell_height, cell_width, species = 'both', clust_rows = TRUE) {
+  gene_list <- unlist(str_split(gene_list, pattern = ' '))
+  print(gene_list)
+  color_scale <- seq(0, 15, by = .01)
+  if (species =='both'){
+    df %>% filter(Gene.Symbol %in% gene_list) %>%
+      select(contains('_p_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> prot_matrix_for_heatmap
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Symbol %in% gene_list) %>% .$Gene.Symbol
+    sample_groups <- ifelse(grepl("^h", colnames(prot_matrix_for_heatmap)), "h", "m")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_p_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human", "mouse"), c(15, 12)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)
+  } else if (species == 'human') {
+    df %>% filter(Gene.Symbol %in% gene_list) %>%
+      select(starts_with('h')) %>% select(contains('_p_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> prot_matrix_for_heatmap
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Symbol %in% gene_list) %>% .$Gene.Symbol
+    sample_groups <- ifelse(grepl("^h", colnames(prot_matrix_for_heatmap)), "h", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_p_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human"), c(15)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)
+  } else if (species == 'mouse') {
+    df %>% filter(Gene.Symbol %in% gene_list) %>% 
+      select(starts_with('m')) %>% select(contains('_p_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> prot_matrix_for_heatmap
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Symbol %in% gene_list) %>% .$Gene.Symbol
+    sample_groups <- ifelse(grepl("^m", colnames(prot_matrix_for_heatmap)), "m", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_p_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("mouse"), c(12)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)    
+    }
+  prot_matrix_for_heatmap <- prot_matrix_for_heatmap[gene_list, ]
+  pheatmap(prot_matrix_for_heatmap, cluster_rows = clust_rows, cluster_cols = FALSE, show_rownames = TRUE, show_colnames = TRUE, 
+           color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)), 
+           breaks = color_scale, annotation_col = sample_groups, #'' ##
+           annotation_colors = list(Species = c(human = "#2E3192", mouse = "#00AEEF"),
+                                    Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                    Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), legend = FALSE,
+           width=10, height=10, cellwidth = cell_width, cellheight = cell_height, angle_col = 90,
+           filename = paste0(outfile, '.pdf')) -> pheatmap_plot
+  graphics.off()
+  return(pheatmap_plot)
+}
+
+### Phosphorylation heatmap function
+make_temporal_heatmap_phos <- function(df, gene_list, outfile, cell_height, cell_width, species = 'both', clust_rows = TRUE) {
+  gene_list <- unlist(str_split(gene_list, pattern = ' '))
+  print(gene_list)
+  color_scale <- seq(0, 15, by = .01)
+  if (species =='both'){
+    df %>% filter(Gene.Site %in% gene_list) %>%
+      select(contains('_phos_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> prot_matrix_for_heatmap
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Site %in% gene_list) %>% .$Gene.Site
+    sample_groups <- ifelse(grepl("^h", colnames(prot_matrix_for_heatmap)), "h", "m")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_phos_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human", "mouse"), c(15, 12)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)
+  } else if (species == 'human') {
+    df %>% filter(Gene.Site %in% gene_list) %>%
+      select(starts_with('h')) %>% select(contains('_phos_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> prot_matrix_for_heatmap
+    #print(prot_matrix_for_heatmap)
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Site %in% gene_list) %>% .$Gene.Site
+    sample_groups <- ifelse(grepl("^h", colnames(prot_matrix_for_heatmap)), "h", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_phos_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human"), c(15)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)
+    print(prot_matrix_for_heatmap)
+  } else if (species == 'mouse') {
+    df %>% filter(Gene.Site %in% gene_list) %>% 
+      select(contains('_phos_rep')) %>% as.matrix() -> prot_matrix_for_heatmap
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Site %in% gene_list) %>% .$Gene.Site
+    sample_groups <- ifelse(grepl("^m", colnames(prot_matrix_for_heatmap)), "m", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_phos_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("mouse"), c(12)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)
+    print(prot_matrix_for_heatmap)
+    }
+  prot_matrix_for_heatmap <- prot_matrix_for_heatmap[gene_list, ]
+  pheatmap(prot_matrix_for_heatmap, cluster_rows = clust_rows, cluster_cols = FALSE, show_rownames = TRUE, show_colnames = TRUE, 
+           color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)), 
+           breaks = color_scale, annotation_col = sample_groups,
+           annotation_colors = list(Species = c(human = "#2E3192", mouse = "#00AEEF"),
+                                    Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                    Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), legend = FALSE,
+           width=10, height=10, cellwidth = cell_width, cellheight = cell_height, angle_col = 90,
+           filename = paste0(outfile, '.pdf')) -> pheatmap_plot
+  graphics.off()
+  return(pheatmap_plot)
+}
+
+
+```
+
+
+```{r Fig. 1 plots}
+
+## mRNA heatmaps
+make_temporal_heatmap_rna(merged_rna_df_log2_rtm_for_heatmap, 'NANOG DNMT3B TBXT PAX6 NODAL SOX2 SOX1 SUSD2 CRABP2 POU5F1 CWC22', outfile = 'Hs_rep_rna_example', 10,10, species = 'human', clust_rows = FALSE)
+make_temporal_heatmap_rna(merged_rna_df_log2_rtm, 'Nanog Dnmt3b T Pax6 Nodal Sox2 Sox1 Susd2 Crabp2 Pou5f1 Cwc22', outfile = 'Mm_rep_rna_example', 10,10, species = 'mouse', clust_rows = FALSE)
+
+
+## Protein heatmaps
+make_temporal_heatmap(Hs_ms_scaled, 'SUSD2 RIPOR2 TAP2 TBXT NCAM1 CRABP2 ENC1 NANOG CALB1 CWC22', outfile = 'Hs_rep_example', 10,10, species = 'human', clust_rows = FALSE)
+make_temporal_heatmap(Mm_ms_scaled, 'Stat3 Fgf2 Nodal Sox9 Bmp7 Castor1 Nanog Sox2 Pou5f1 Cdk10', outfile = 'mouse_rep_example', 10,10, species = 'mouse', clust_rows = FALSE)
+
+## Phosphorylation heatmaps
+make_temporal_heatmap_phos(Mm_ms_phos_scaled, 'Fbxo15.99 Eif3b.111 Pdha1.232 Wnk4.783 Sptbn1.2186 Dnmt3a.257 Txlng.515 Rbm8a.42 Dnmt3b.167', outfile = 'mouse_rep_example_phos', 10,10, species = 'mouse', clust_rows = FALSE)
+make_temporal_heatmap_phos(Hs_ms_phos_scaled, 'NFKB2.222 DNMT3B.100 PDHA1.270 VIM.73 SRGAP3.895 VIM.56 DUT.99 PIK3C2A.60 NCL.92 ZC3H13.198', outfile = 'human_rep_example_phos', 10,10, species = 'human', clust_rows = FALSE)
+```
+
+
+```{r Sup. Fig. 1 plots}
+
+## QC plots
+prot_filtered_unfiltered_comparison <- data.frame(Species = c('Human', 'Mouse'), Filtered = c(7352, 8699), Unfiltered = c(8353, 9441)) %>% melt(value.name = 'Count')
+ggplot(prot_filtered_unfiltered_comparison, aes(x = Species, y = Count, fill = variable)) + geom_bar(stat = 'identity', position = 'dodge') + theme(legend.position = 'top')
+
+## RNA replicate correlation Scatter plots
+
+scatter_plots_ggplot_all <- function(df, pdf_outfile) {
+  
+  # Load ggplot2 library
+  library(ggplot2)
+  library(ggpmisc)
+  library(scales)
+  library(ggrastr)
+  # Get column names
+  col_names <- names(df)
+  
+  # Create empty list to store plots
+  plots <- list()
+  
+  # Loop through columns
+  for (i in 1:(length(col_names)-1)) {
+    #print(col_names[i])
+    for (j in (i+1):length(col_names)) {
+      # Check if columns are numeric
+      print(strsplit(col_names[i], '_rep')[[1]])
+      if (strsplit(col_names[i], '_rep')[[1]][1] == strsplit(col_names[j], '_rep')[[1]][1])  {
+        # Create scatter plot
+        p <- ggplot(df, aes_string(x = col_names[i], y = col_names[j])) +
+          rasterize(geom_point(alpha = 0.2, size = 0.1), dpi = 300) +
+          #geom_smooth(method=lm) +
+          stat_poly_eq() +
+          scale_x_continuous(trans="log10", limits=c(NA,1e+5), labels = trans_format("log10", math_format(10^.x))) +
+          scale_y_continuous(trans="log10", limits=c(NA,1e+5), labels = trans_format("log10", math_format(10^.x))) +
+          #theme_set(theme(text = element_text(size = 15), axis.text = element_text(size = 24), axis.line = element_line(size =10)))+
+          theme_cowplot(font_size = 12, rel_small = 10/12, rel_large = 12/12) +
+          xlab('Rep1') + ylab('Rep2') +
+          ggtitle(paste(strsplit(col_names[i], '_rep')[[1]][1]))
+        # Add plot to list
+        plots[[paste(col_names[i], col_names[j])]] <- p
+      }
+    }
+  }
+  # Plot all plots in the list
+  library(gridExtra)
+  g <- grid.arrange(grobs = plots, ncol = 5)
+  ggsave(file = pdf_outfile, g, device = 'pdf', bg = 'white', dpi = 300, height = 5, width = 22, units = 'cm')
+}
+
+## PCA plots
+#### RNA
+Hs_rna_pca_result <- prcomp(merged_rna_df %>% select(starts_with('h')) %>% select(contains('_r_rep')) %>% t())
+Hs_rna_pca_coordinates <- as.data.frame(Hs_rna_pca_result$x) 
+Hs_rna_pca_coordinates$sample_name <- rownames(Hs_rna_pca_coordinates)
+Hs_rna_pca_coordinates %>% mutate(stage = ifelse(grepl("^hNaive|^mNaive", rownames(Hs_rna_pca_coordinates)), "Naive",
+                        ifelse(grepl("^hPrimed|^mPrimed", rownames(Hs_rna_pca_coordinates)), "Primed",
+                          ifelse(grepl("^hEarly|^mEarly", rownames(Hs_rna_pca_coordinates)), "Early",
+                                 ifelse(grepl("^hLate|^mLate", rownames(Hs_rna_pca_coordinates)), "Late", NA)))),
+                        Species = ifelse(grepl("^h", rownames(Hs_rna_pca_coordinates)), "human", "mouse")) -> Hs_rna_pca_coordinates
+ggplot(Hs_rna_pca_coordinates, aes(x = PC1, y = PC2))+
+  geom_point(size = 4, alpha = .75, aes(color = stage, shape = Species)) + scale_color_manual(values = c('#fdae61', '#d7191c', '#abd9e9', '#2c7bb6')) + 
+  theme(axis.text = element_blank(), axis.ticks = element_blank()) +
+  labs(y = paste0('PC2 (', round(summary(Hs_rna_pca_result)$importance[5] * 100, 2), '%)'), x = paste0('PC1 (', round(summary(Hs_rna_pca_result)$importance[2] * 100, 2), '%)')) + theme(axis.ticks = element_blank(), axis.text = element_blank()) #+ labs(subtitle = 'RNA PCA log2 TPMs') #+ geom_label_repel(data = Hs_rna_pca_coordinates, aes(label = sample_name)) 
+ggsave('PCA_plot_Hs_log2_tpm.pdf', device = 'pdf', units = 'cm', height = 6, width = 8)
+
+Mm_rna_pca_result <- prcomp(merged_rna_df %>% select(starts_with('m')) %>% select(contains('_r_rep')) %>% t())
+Mm_rna_pca_coordinates <- as.data.frame(Mm_rna_pca_result$x) 
+Mm_rna_pca_coordinates$sample_name <- rownames(Mm_rna_pca_coordinates)
+Mm_rna_pca_coordinates %>% mutate(stage = ifelse(grepl("^hNaive|^mNaive", rownames(Mm_rna_pca_coordinates)), "Naive",
+                        ifelse(grepl("^hPrimed|^mPrimed", rownames(Mm_rna_pca_coordinates)), "Primed",
+                          ifelse(grepl("^hEarly|^mEarly", rownames(Mm_rna_pca_coordinates)), "Early",
+                                 ifelse(grepl("^hLate|^mLate", rownames(Mm_rna_pca_coordinates)), "Late", NA)))),
+                        Species = ifelse(grepl("^h", rownames(Mm_rna_pca_coordinates)), "human", "mouse")) -> Mm_rna_pca_coordinates
+ggplot(Mm_rna_pca_coordinates, aes(x = PC1, y = PC2)) +
+  geom_point(size = 4, alpha = .75, aes(color = stage, shape = Species)) + scale_color_manual(values = c('#fdae61', '#d7191c', '#abd9e9', '#2c7bb6')) + 
+  theme(axis.text = element_blank(), axis.ticks = element_blank()) +
+  labs(y = paste0('PC2 (', round(summary(Mm_rna_pca_result)$importance[5] * 100, 2), '%)'), x = paste0('PC1 (', round(summary(Mm_rna_pca_result)$importance[2] * 100, 2), '%)')) + theme(axis.ticks = element_blank(), axis.text = element_blank()) #+ labs(subtitle = 'RNA PCA log2 TPMs') #+ geom_label_repel(data = Mm_rna_pca_coordinates, aes(label = sample_name))
+
+#### Protein
+
+## Use Mm_ms_scaled for mouse data, and Hs_ms_scaled for human data
+rerun_merged_ms_data <- Hs_ms_scaled %>% select(contains('_p_'))
+merged_pca_result <- prcomp(rerun_merged_ms_data%>% dplyr::select(contains('_p_rep')) %>% t())
+merged_pca_coordinates <- as.data.frame(merged_pca_result$x) 
+merged_pca_coordinates$sample_name <- rownames(merged_pca_coordinates)
+
+merged_pca_coordinates %>% mutate(stage = ifelse(grepl("^hNaive|^mNaive|^Naive", rownames(merged_pca_coordinates)), "Naive",
+                        ifelse(grepl("^hPrimed|^mPrimed|^Primed", rownames(merged_pca_coordinates)), "Primed",
+                          ifelse(grepl("^hEarly|^mEarly|^Early", rownames(merged_pca_coordinates)), "Early",
+                                 ifelse(grepl("^hLate|^mLate|^Late", rownames(merged_pca_coordinates)), "Late", NA)))),
+         Species = ifelse(grepl("^h", rownames(merged_pca_coordinates)), "human", "mouse")) -> merged_pca_coordinates
+rownames(merged_pca_coordinates) <- NULL
+(summary(merged_pca_result))
+summary(merged_pca_result)$importance[3] * 100
+(merged_pca_result$rotation) -> pca_loadings_df
+ggplot(merged_pca_coordinates, aes(x = PC1, y = PC2)) +
+  geom_point(size = 4, alpha = .75, aes(color = stage, shape = Species)) + scale_color_manual(values = c('#fdae61', '#d7191c', '#abd9e9', '#2c7bb6')) +
+  #geom_label_repel(data = merged_pca_coordinates, aes(label = sample_name), min.segment.length = 0, box.padding = .5, max.overlaps = Inf) +
+  labs(y = paste0('PC2 (', round(summary(merged_pca_result)$importance[5] * 100, 2), '%)'), x = paste0('PC1 (', round(summary(merged_pca_result)$importance[2] * 100, 2), '%)')) + theme(axis.ticks = element_blank(), axis.text = element_blank()) -> PCA_Hs_ms_scaled
+PCA_Hs_ms_scaled
+
+
+rerun_merged_ms_data <- Mm_ms_scaled %>% select(contains('_p_'))
+merged_pca_result <- prcomp(rerun_merged_ms_data%>% dplyr::select(contains('_p_rep')) %>% t())
+merged_pca_coordinates <- as.data.frame(merged_pca_result$x) 
+merged_pca_coordinates$sample_name <- rownames(merged_pca_coordinates)
+
+merged_pca_coordinates %>% mutate(stage = ifelse(grepl("^hNaive|^mNaive|^Naive", rownames(merged_pca_coordinates)), "Naive",
+                        ifelse(grepl("^hPrimed|^mPrimed|^Primed", rownames(merged_pca_coordinates)), "Primed",
+                          ifelse(grepl("^hEarly|^mEarly|^Early", rownames(merged_pca_coordinates)), "Early",
+                                 ifelse(grepl("^hLate|^mLate|^Late", rownames(merged_pca_coordinates)), "Late", NA)))),
+         Species = ifelse(grepl("^h", rownames(merged_pca_coordinates)), "human", "mouse")) -> merged_pca_coordinates
+rownames(merged_pca_coordinates) <- NULL
+(summary(merged_pca_result))
+summary(merged_pca_result)$importance[3] * 100
+(merged_pca_result$rotation) -> pca_loadings_df
+ggplot(merged_pca_coordinates, aes(x = PC1, y = PC2)) +
+  geom_point(size = 4, alpha = .75, aes(color = stage, shape = Species)) + scale_color_manual(values = c('#fdae61', '#d7191c', '#abd9e9', '#2c7bb6')) +
+  #geom_label_repel(data = merged_pca_coordinates, aes(label = sample_name), min.segment.length = 0, box.padding = .5, max.overlaps = Inf) +
+  labs(y = paste0('PC2 (', round(summary(merged_pca_result)$importance[5] * 100, 2), '%)'), x = paste0('PC1 (', round(summary(merged_pca_result)$importance[2] * 100, 2), '%)')) + theme(axis.ticks = element_blank(), axis.text = element_blank()) -> PCA_Mm_ms_scaled
+
+#### Phosphosites 
+merged_phos_pca_result <- prcomp(Hs_ms_phos_scaled %>% dplyr::select(contains('phos_rep')) %>% t()) 
+merged_phos_pca_coordinates <- as.data.frame(merged_phos_pca_result$x) 
+merged_phos_pca_coordinates$sample_name <- rownames(merged_phos_pca_coordinates)
+summary(merged_phos_pca_result)
+merged_phos_pca_coordinates %>% mutate(stage = ifelse(grepl("^hNaive|^mNaive", rownames(merged_phos_pca_coordinates)), "Naive",
+                        ifelse(grepl("^hPrimed|^mPrimed", rownames(merged_phos_pca_coordinates)), "Primed",
+                          ifelse(grepl("^hEarly|^mEarly", rownames(merged_phos_pca_coordinates)), "Early",
+                                 ifelse(grepl("^hLate|^mLate", rownames(merged_phos_pca_coordinates)), "Late", NA)))),
+         Species = ifelse(grepl("^h", rownames(merged_phos_pca_coordinates)), "human", "mouse")) -> merged_phos_pca_coordinates
+rownames(merged_phos_pca_coordinates) <- NULL
+ggplot(merged_phos_pca_coordinates, aes(x = PC1, y = PC2))+
+  geom_point(size = 4, aes(color = stage, shape = Species), alpha = .75) + scale_color_manual(values = c('#fdae61', '#d7191c', '#abd9e9', '#2c7bb6')) + theme(axis.text = element_blank(), axis.ticks = element_blank()) +
+  labs(y = paste0('PC2 (', round(summary(merged_phos_pca_result)$importance[5] * 100, 2), '%)'), x = paste0('PC1 (', round(summary(merged_phos_pca_result)$importance[2] * 100, 2), '%)')) + theme(axis.ticks = element_blank(), axis.text = element_blank()) -> PCA_Hs_phos_scaled
+
+
+merged_phos_pca_result <- prcomp(Mm_ms_phos_scaled %>% dplyr::select(contains('phos_rep')) %>% t()) ## Mouse data, use Hs_ms_phos_scaled for human data
+merged_phos_pca_coordinates <- as.data.frame(merged_phos_pca_result$x) 
+merged_phos_pca_coordinates$sample_name <- rownames(merged_phos_pca_coordinates)
+summary(merged_phos_pca_result)
+merged_phos_pca_coordinates %>% mutate(stage = ifelse(grepl("^hNaive|^mNaive", rownames(merged_phos_pca_coordinates)), "Naive",
+                        ifelse(grepl("^hPrimed|^mPrimed", rownames(merged_phos_pca_coordinates)), "Primed",
+                          ifelse(grepl("^hEarly|^mEarly", rownames(merged_phos_pca_coordinates)), "Early",
+                                 ifelse(grepl("^hLate|^mLate", rownames(merged_phos_pca_coordinates)), "Late", NA)))),
+         Species = ifelse(grepl("^h", rownames(merged_phos_pca_coordinates)), "human", "mouse")) -> merged_phos_pca_coordinates
+rownames(merged_phos_pca_coordinates) <- NULL
+ggplot(merged_phos_pca_coordinates, aes(x = PC1, y = PC2))+
+  geom_point(size = 4, aes(color = stage, shape = Species), alpha = .75) + scale_color_manual(values = c('#fdae61', '#d7191c', '#abd9e9', '#2c7bb6')) + theme(axis.text = element_blank(), axis.ticks = element_blank()) +
+  labs(y = paste0('PC2 (', round(summary(merged_phos_pca_result)$importance[5] * 100, 2), '%)'), x = paste0('PC1 (', round(summary(merged_phos_pca_result)$importance[2] * 100, 2), '%)')) + theme(axis.ticks = element_blank(), axis.text = element_blank()) -> PCA_Mm_phos_scaled
+PCA_Mm_phos_scaled
+
+
+##Hpa plots 
+ggplot(hpa_df_collapsed %>% select(Loc_num, Total_members, Hs_fraction_detected, Mm_fraction_detected) %>% melt(id.vars = c('Loc_num', 'Total_members'), variable.name = 'Species', value.name = 'Fraction'), 
+       aes(x = reorder(Loc_num, Total_members), y = Fraction, fill =Species)) + ##fill = factor(Species, levels = c('Human', 'Mouse')))) +
+  geom_bar(position="dodge", stat="identity") +
+  coord_flip() + 
+  labs(y = 'Fraction detected', subtitle = 'Human hpa annotation stats') +
+  scale_fill_manual(values=c('#2e3192', '#00aeef'), labels = c('Human', 'Mouse')) +
+  #scale_y_log10()+
+  theme_cowplot(font_size = 12, rel_small = 10/12, rel_large = 12/12) +
+  theme(axis.title.y = element_blank(), legend.title = element_blank(), legend.position = 'top', axis.line = element_line(linewidth = 0.25), axis.ticks = element_line(linewidth = 0.25))
+```
+
