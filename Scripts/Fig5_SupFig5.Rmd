@@ -1,0 +1,335 @@
+---
+title: "Fig5_SupFig5"
+output: html_document
+date: "2024-09-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(ggrastr)
+library(cowplot)
+library(RColorBrewer)
+library(ggplot2)
+library(ggridges)
+library(ggpmisc)
+library(GGally)
+library(psych)
+library(ggpubr)
+library(reshape2)
+library(cowplot)
+library(umap)
+library(EnvStats)
+library(metR)
+library(conflicted)
+library(pheatmap)
+library(igraph)
+theme_set(theme_cowplot(rel_small = 10/12) + theme(axis.line = element_line(linewidth = .25), axis.ticks = element_line(linewidth = .25)))
+#setwd("/path/to/data")
+
+```
+
+```{r Functions}
+plot_phos_volcano <- function(df, contrast, label_points, label_num = 5) {
+   above_threshold <- df %>% filter(!!sym(paste0(contrast,'.l2r')) > 1, !!sym(paste0(contrast,'.q')) < 0.05)
+   below_threshold <- df %>% filter(!!sym(paste0(contrast,'.l2r')) < -1, !!sym(paste0(contrast,'.q')) < 0.05)
+   print(above_threshold %>% nrow())
+   print(below_threshold %>% nrow())
+   above_threshold <- above_threshold %>% arrange(!!sym(paste0(contrast,'.q')), -abs(!!sym(paste0(contrast,'.l2r'))))
+   below_threshold <- below_threshold %>% arrange(!!sym(paste0(contrast,'.q')), -abs(!!sym(paste0(contrast,'.l2r'))))
+   print(above_threshold)
+   plot <- ggplot(df, aes_string(x = paste0(contrast,'.l2r'), y = paste0('-log10(', contrast,'.q)'))) +
+     rasterize(geom_point(color = 'grey', shape = 16), dpi = 300) + lims(x = c(-10,10), y = c(0,8)) + 
+     labs(subtitle = contrast, x = 'log2FC', y = '-Log10(P.adj)') +
+     geom_vline(xintercept = -1, color="black", linetype = 2, size = .25) + 
+     geom_vline(xintercept = 1, color="black", linetype = 2, size = .25) +
+     geom_hline(yintercept = -log10(.05), color="black", linetype = 2, size = .25) +
+     rasterize(geom_point(data = above_threshold, color = "#d7191c", shape = 16),dpi = 300) +
+     rasterize(geom_point(data = below_threshold, color = "#2c7bb6", shape = 16), dpi = 300) + 
+     draw_text(c(above_threshold %>% nrow(), below_threshold %>% nrow()), x = c(9,-9), y = c(8,8)) +
+     if (label_points == 'yes') {
+       geom_label_repel(data = rbind(above_threshold %>% head(label_num), 
+                                     below_threshold %>% head(label_num)), size = 3,
+                      aes_string(x = paste0(contrast,'.l2r'), y = paste0('-log10(', contrast,'.q)'), label = 'Gene_label'),
+                      max.overlaps = Inf, box.padding = .25, min.segment.length = .1)
+     } else {
+         NULL}
+  return(plot)
+}
+
+plot_phos_site_heatmap_reduced <- function(df, phos_site, clust_rows = F, scaling){
+  outfile <- phos_site
+  if (scaling == 'row') {
+    color_scale <- seq(-2, 2, by = .25)
+    colorscale_range = colorRampPalette(c('#2c7bb6', 'white', '#d7191c'))(length(color_scale))
+    outfile <- paste0(outfile,'_', scaling)
+  } else if (scaling == 'none') {
+    color_scale <- seq(0, 15, by = .25)
+    colorscale_range = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale))
+    outfile <- paste0(outfile,'_', scaling)
+      }
+  sample_groups_p_hs_reduced <- data.frame(
+  Replicate = gsub(".*_phos_", "", colnames(df %>% select(contains('_phos_rep')))),
+  Stage = case_when(
+      grepl("Primed", colnames(df %>% select(contains('_phos_rep')))) ~ "Primed",
+      grepl("Early", colnames(df %>% select(contains('_phos_rep')))) ~ "Early",
+      grepl("Late", colnames(df %>% select(contains('_phos_rep')))) ~ "Late",
+      TRUE ~ "Other"  # Add more conditions as needed
+    ), Species = rep(c("human"), c(9))) %>% filter(Stage != 'Other')
+  phos_site <- str_split(phos_site, pattern = ',') %>% unlist()
+  df <- df %>% filter(Gene_label %in% phos_site) %>% select(Gene_label, contains('_phos_')) %>% column_to_rownames('Gene_label')
+  print(df)
+  rownames(sample_groups_p_hs_reduced) <- colnames(df)
+  if (nrow(df) >1 & clust_rows == T) {
+    clust_rows = T}
+  pheatmap(df %>% as.matrix(), 
+         cluster_rows = clust_rows, cluster_cols = F, show_rownames = TRUE, fontsize = 12, cellwidth = 14, cellheight = 14, border_color = 'black', scale = scaling, #display_numbers = T,
+         #color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)),
+         color = colorscale_range,
+         breaks = color_scale, annotation_col = sample_groups_p_hs_reduced, angle_col = 90,
+         annotation_colors = list(Species = c(human = "#2E3192"),
+                                  Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                  Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), height = 10, width = 10,
+         filename = paste0(outfile, '_temporal_profile.pdf')) 
+  graphics.off()}
+
+Mm_plot_phos_site_heatmap_reduced <- function(df, phos_site, clust_rows = F, scaling, sample_num = 9){
+  outfile <- phos_site
+  if (scaling == 'row') {
+    color_scale <- seq(-2, 2, by = .25)
+    colorscale_range = colorRampPalette(c('#2c7bb6', 'white', '#d7191c'))(length(color_scale))
+    outfile <- paste0(outfile,'_', scaling)
+  } else if (scaling == 'none') {
+    color_scale <- seq(0, 15, by = .25)
+    colorscale_range = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale))
+    outfile <- paste0(outfile,'_', scaling)
+      }
+  sample_groups_p_mm_reduced <- data.frame(
+  Replicate = gsub(".*_phos_", "", colnames(df %>% select(contains('_phos_rep')))),
+  Stage = case_when(
+    grepl("Naive", colnames(df %>% select(contains('_phos_rep')))) ~ "Naive",
+    grepl("Primed", colnames(df %>% select(contains('_phos_rep')))) ~ "Primed",
+    grepl("Early", colnames(df %>% select(contains('_phos_rep')))) ~ "Early",
+    grepl("Late", colnames(df %>% select(contains('_phos_rep')))) ~ "Late",
+    TRUE ~ "Other"  # Add more conditions as needed
+    ), Species = rep(c("mouse"), c(sample_num))) %>% filter(Stage != 'Other')
+  phos_site <- str_split(phos_site, pattern = ',') %>% unlist()
+  df <- df %>% filter(Gene_label %in% phos_site) %>% select(Gene_label, contains('_phos_rep')) %>% column_to_rownames('Gene_label')
+  print(df)
+  rownames(sample_groups_p_mm_reduced) <- colnames(df)
+  if (nrow(df) >1 & clust_rows == T) {
+    clust_rows = T}
+  pheatmap(df %>% as.matrix(), 
+         cluster_rows = clust_rows, cluster_cols = F, show_rownames = TRUE, fontsize = 12, cellwidth = 14, cellheight = 14, border_color = 'black', scale = scaling, #display_numbers = T,
+         #color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)),
+         color = colorscale_range,
+         breaks = color_scale, annotation_col = sample_groups_p_mm_reduced, angle_col = 90,
+         annotation_colors = list(Species = c(mouse = "#00AEEF"),
+                                  Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                  Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), height = 10, width = 10,
+         filename = paste0(outfile, '_temporal_profile.pdf'))} 
+
+Mm_plot_gene_heatmap_reduced <- function(df, genes, clust_rows = F, scaling, sample_num = 9){
+  outfile <- genes
+  if (scaling == 'row') {
+    color_scale <- seq(-2, 2, by = .25)
+    colorscale_range = colorRampPalette(c('#2c7bb6', 'white', '#d7191c'))(length(color_scale))
+    outfile <- paste0(outfile,'_', scaling)
+  } else if (scaling == 'none') {
+    color_scale <- seq(0, 15, by = .25)
+    colorscale_range = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale))
+    outfile <- paste0(outfile, '_',scaling)
+      }
+  sample_groups_p_mm_reduced <- data.frame(
+  Replicate = gsub(".*_p_", "", colnames(df %>% select(contains('_p_rep')))),
+  Stage = case_when(
+    grepl("Naive", colnames(df %>% select(contains('_p_rep')))) ~ "Naive",
+    grepl("Primed", colnames(df %>% select(contains('_p_rep')))) ~ "Primed",
+    grepl("Early", colnames(df %>% select(contains('_p_rep')))) ~ "Early",
+    grepl("Late", colnames(df %>% select(contains('_p_rep')))) ~ "Late",
+    TRUE ~ "Other"  # Add more conditions as needed
+    ), Species = rep(c("mouse"), c(sample_num))) %>% filter(Stage != 'Other')
+  genes <- str_split(genes, pattern = ' ') %>% unlist()
+  df <- df %>% filter(Gene.Symbol %in% genes) %>% select(Gene.Symbol, contains('_p_rep')) %>% arrange(Gene.Symbol) %>% column_to_rownames('Gene.Symbol')
+  rownames(sample_groups_p_mm_reduced) <- colnames(df)
+  #print(sample_groups_p_mm_reduced)
+  if (nrow(df) >1 & clust_rows == T) {
+    clust_rows = T}
+  pheatmap(df %>% as.matrix(), 
+         cluster_rows = clust_rows, cluster_cols = F, show_rownames = TRUE, fontsize = 12, cellwidth = 14, cellheight = 14, border_color = 'black', scale = scaling,
+         #color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)),
+         color = colorscale_range,
+         breaks = color_scale, annotation_col = sample_groups_p_mm_reduced, angle_col = 90,
+         annotation_colors = list(Species = c(mouse = "#00AEEF"),
+                                  Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                  Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), 
+         filename = paste0(outfile, '_temporal_profile.pdf'), height = 10, width = 10)
+  graphics.off()}
+```
+
+```{r Fig.5}
+## Human temporal phosphosite heatmap
+
+Hs_ms_phos_scaled_for_heatmap <- Hs_ms_phos_scaled %>% column_to_rownames('Gene.Site') %>%select(contains('H9_phos_rep'), contains('_phos_rep'))
+sample_groups_phos_hs <- data.frame(
+  Replicate = gsub(".*_phos_", "", colnames(Hs_ms_phos_scaled_for_heatmap)),
+  Stage = case_when(
+      grepl("Naive", colnames(Hs_ms_phos_scaled_for_heatmap)) ~ "Naive",
+      grepl("Primed", colnames(Hs_ms_phos_scaled_for_heatmap)) ~ "Primed",
+      grepl("Early", colnames(Hs_ms_phos_scaled_for_heatmap)) ~ "Early",
+      grepl("Late", colnames(Hs_ms_phos_scaled_for_heatmap)) ~ "Late",
+      TRUE ~ "Other"  # Add more conditions as needed
+    ), Species = rep(c("human"), c(15)))
+row.names(sample_groups_phos_hs) <- colnames(Hs_ms_phos_scaled_for_heatmap)
+hc_phosphosites <- hclust(Dist(Hs_ms_phos_scaled_for_heatmap, method = 'pearson'), method = 'complete')
+as.hclust(dendsort(hc_phosphosites)) -> hc_phosphosites
+cutree(hc_phosphosites, k = 5)
+
+Hs_ms_phos_scaled_for_heatmap
+pheatmap(Hs_ms_phos_scaled_for_heatmap %>% as.matrix(), 
+         cluster_rows = hc_phosphosites, cluster_cols = FALSE, show_rownames = FALSE,
+         color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)),
+         breaks = color_scale, annotation_col = sample_groups_phos_hs, angle_col = 90,
+         annotation_colors = list(Species = c(human = "#2E3192"),
+                                  Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                  Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')),
+         filename = 'Hs_phos_scaled_heatmap_pearson_complete.png', width=4, height=8)
+
+## Representative ridgeplots
+Hs_merged_phos_scaled %>% mutate(Gene_label = paste0(Gene.Symbol, ' ', Phos_residue, Site.Position)) %>% select(-contains('_p_'), -contains('gmean'), -contains('sum')) %>% select(Gene_label, everything()) %>% melt(id.vars = c('Gene_label', 'Gene.Symbol', 'Uniprot', 'Motif', 'Phos_residue', 'Site.Position', 'sequence'), variable.name = 'Stage', value.name = 'Abundance') %>% group_by(Gene_label) %>% mutate(Abundance = max_normalize(Abundance)) -> Hs_phos_scaled_for_ridgeline_plots 
+  
+ggplot(Hs_phos_scaled_for_ridgeline_plots %>% filter(Gene.Symbol %in% c('H1-3', 'UTF1', 'CHAF1A', 'EIF4B')), aes(x = Stage, y = Gene_label, group = Gene_label, height = Abundance)) +
+  geom_ridgeline(scale = .8, linewidth = 0.25) + geom_vline(xintercept = c(3,6,9,12), linetype = 2, linewidth = .25) + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = 'none', legend.title = element_blank(), axis.title.y = element_blank()) + labs(x = 'Stage', y = 'Scaled abundance')
+ggsave('Hs_Phos_representative_example.pdf', device = 'pdf', units = 'cm', height = 8, width = 8)
+
+## Bar plots
+ggplot(VanHoof_pluripotent_phosphosites_bar_plots %>% filter(Gene.Symbol %in% VanHoof_pluripotent_proteins$Gene.Symbol), aes(x = (Gene_label), y = gmean, fill = contrast, group = contrast)) + geom_bar(position = 'dodge', stat = 'identity') +
+    scale_fill_manual(values = c('#abd9e9', '#fdae61', '#d7191c'), breaks = c('Naive', 'Early', 'Late')) + geom_point(position = position_dodge(.9)) +
+    geom_errorbar(aes(ymin=gmean-abs(gsd), ymax=gmean+abs(gsd)), position = position_dodge(.9), linetype=1, width = 0.1, linewidth = 0.4)+ ylim(-5,5) +
+    labs(y = 'log2 abundance ratio (relative to primed ESCs)') + theme(legend.title = element_blank(), legend.position = 'top', axis.text.x = element_text(vjust = 0.5, hjust = 1, angle = 90), axis.title.x = element_blank())
+ggsave('VanHoof_phosphosites_detected.pdf', device = 'pdf', units = 'cm', height = 10, width = 13)
+
+## Volcano plots
+plot_phos_volcano(Hs_merged_phos_prot_norm, 'H9_pvn', label_points = 'yes') -> phos_prot_norm_plot1 
+plot_phos_volcano(Hs_merged_phos_prot_norm, 'evp', label_points = 'yes') -> phos_prot_norm_plot2
+plot_phos_volcano(Hs_merged_phos_prot_norm, 'lve', label_points = 'yes') -> phos_prot_norm_plot3
+plot_phos_volcano(Hs_merged_phos_prot_norm, 'lvp', label_points = 'yes') -> phos_prot_norm_plot4
+plot_phos_volcano(Hs_merged_phos_prot_norm, 'RUES2pvH9p', label_points = 'yes') -> phos_prot_norm_plot5
+
+## Phosphosite strip plots
+
+plot_phos_site_heatmap_reduced(phos_site = 'ECT2 T359,ZFP36L1 S92,GSK3A Y279', df = Hs_phos_scaled_reduced, scaling = 'none')
+plot_gene_heatmap_reduced(genes = 'ECT2 ZFP36L1 GSK3A', scaling = 'row')
+```
+
+```{r Sup. Fig. 5}
+## Mouse temporal phosphosite heatmap
+
+Mm_ms_phos_scaled_for_heatmap <- Mm_ms_phos_scaled %>% select(contains('_phos_rep'))
+sample_groups_phos_mm <- data.frame(
+  Replicate = gsub(".*_phos_", "", colnames(Mm_ms_phos_scaled_for_heatmap)),
+  Stage = case_when(
+      grepl("Naive", colnames(Mm_ms_phos_scaled_for_heatmap)) ~ "Naive",
+      grepl("Primed", colnames(Mm_ms_phos_scaled_for_heatmap)) ~ "Primed",
+      grepl("Early", colnames(Mm_ms_phos_scaled_for_heatmap)) ~ "Early",
+      grepl("Late", colnames(Mm_ms_phos_scaled_for_heatmap)) ~ "Late",
+      TRUE ~ "Other"  # Add more conditions as needed
+    ), Species = rep(c("mouse"), c(12)))
+row.names(sample_groups_phos_mm) <- colnames(Mm_ms_phos_scaled_for_heatmap)
+mc_phosphosites <- hclust(Dist(Mm_ms_phos_scaled_for_heatmap, method = 'pearson'), method = 'complete')
+as.hclust(dendsort(mc_phosphosites)) -> mc_phosphosites
+
+pheatmap(Mm_ms_phos_scaled_for_heatmap %>% as.matrix(), 
+         cluster_rows = mc_phosphosites, cluster_cols = FALSE, show_rownames = FALSE,
+         color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)),
+         breaks = color_scale, annotation_col = sample_groups_phos_mm, angle_col = 90,
+         annotation_colors = list(Species = c(mouse = "#00AEEF"),
+                                  Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                  Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')),
+         filename = 'Mm_phos_scaled_heatmap_pearson_complete.png', width=4, height=8)
+
+## Residue summaries
+
+Hs_phos_raw %>%
+    group_by(Gene.Symbol) %>%
+    summarise(count = n()) %>%
+    mutate(count_category = case_when(
+        count == 1 ~ "1",
+        count == 2 ~ "2",
+        count >= 3 ~ ">=3"
+    )) %>%
+    group_by(count_category) %>%
+    summarise(num_prots = n()) %>% mutate(Species = 'Human') -> Hs_phosphosite_summary_stats
+
+Mm_phos_raw %>% group_by(Gene.Symbol) %>%
+    summarise(count = n()) %>%
+    mutate(count_category = case_when(
+        count == 1 ~ "1",
+        count == 2 ~ "2",
+        count >= 3 ~ ">=3"
+    )) %>%
+    group_by(count_category) %>%
+    summarise(num_prots = n()) %>% mutate(Species = 'Mouse') -> Mm_phosphosite_summary_stats
+
+ggplot(rbind(Hs_phosphosite_summary_stats, Mm_phosphosite_summary_stats), aes(x = reorder(count_category, -num_prots), y = num_prots, fill = Species)) + geom_bar(stat = 'identity', position = 'dodge') + scale_fill_manual(values = c('#2E3192', '#00AEEF')) + theme(legend.position = 'top') + labs(x = 'Number of Phosphosites detected', y = 'Count')
+ggsave('Phosphosite_stats_summary.pdf', device = 'pdf', height = 10, width = 10, units = 'cm', dpi = 300)
+
+
+## Protein-phosphosite correlation
+ggplot(Hs_merged_phos_log2_rtm_for_corr_plot, aes(x= correlation)) + geom_histogram(fill = '#2E3192') + labs(subtitle = 'Correlation between phosphosite and its protein level', x = 'Pearson R', y = 'count') +
+  geom_label_repel(data = Hs_merged_phos_log2_rtm_for_corr_plot %>% filter(Gene.Symbol %in% c('LIN28A', 'DOT1L', 'SALL1', 'UTF1', 'DNMT3B', 'CTR9', 'TCF20', 'H1-3')), aes(y= correlation, label = Gene_label), size = 3, min.segment.length = 0.1, max.overlaps = 20, box.padding = .5) #+ ylim(0,400)
+ggsave('Hs_Phosphosite_protein_correlation.pdf', units = 'cm', device = 'pdf', height = 10, width = 10)
+
+ggplot(Mm_merged_phos_log2_rtm_for_corr_plot, aes(x= correlation)) + geom_histogram(fill = '#00AEEF') + labs(subtitle = 'Correlation between phosphosite and its protein level (mouse)', x = 'Pearson R', y = 'count') +
+  geom_label_repel(data = Mm_merged_phos_log2_rtm_for_corr_plot %>% filter(Gene.Symbol %in% c('Col3a1', 'Tcf20', 'Dnmt3b', 'H1-3')), aes(y= correlation, label = Gene_label), size = 3, min.segment.length = 0.1, max.overlaps = Inf, box.padding = .5)
+ggsave('Mm_Phosphosite_protein_correlation.pdf', units = 'cm', device = 'pdf', height = 10, width = 10)
+
+## Gsk3a, Gsk3b, Ctnna1, Ctnnb1 heatmaps
+Mm_plot_gene_heatmap_reduced(df = Mm_ms_scaled, genes = 'Gsk3a Gsk3b Ctnna1 Ctnnb1', clust_rows = T, scaling = 'row', sample_num = 12)
+
+## Gsk3a Y279
+
+Mm_plot_phos_site_heatmap_reduced(df = Mm_merged_phos_log2_norm_prot_subtracted, phos_site = 'Gsk3a Y279', scaling = 'row', sample_num = 12)
+
+## Human mouse phosphosite correlation 
+inner_join(Hs_phos_raw %>% select(Gene.Symbol, Gene_label, Motif, contains('phos_rep'), -contains('H9')), 
+           Mm_phos_raw %>% select(Gene.Symbol, Gene_label, Motif, contains('phos_rep'), -contains('Naive')) %>% mutate(Gene.Symbol.upper = toupper(Gene.Symbol)), by = c('Motif')) %>%
+  filter(Gene.Symbol.x == Gene.Symbol.upper) %>% select(-Gene.Symbol.upper) %>% 
+  mutate(hphos.gmean = geometric.mean(c_across(hPrimedRUES2_phos_rep1:hLate_phos_rep3)),
+         mphos.gmean = geometric.mean(c_across(mPrimed_phos_rep1:mLate_phos_rep3))) %>%
+  mutate_at(vars(starts_with('m') & contains("_phos_rep")), ~log2(./mphos.gmean)) %>%
+  mutate_at(vars(starts_with('h') & contains("_phos_rep")), ~log2(./hphos.gmean)) %>% select(-contains('.gmean')) %>% 
+  mutate(species_r = cor.test(c_across(starts_with('h') & contains("_phos_rep")), c_across(starts_with('m') & contains("_phos_rep")), method = 'pearson')$estimate, 
+         species_r.pval = cor.test(c_across(starts_with('h') & contains("_phos_rep")), c_across(starts_with('m') & contains("_phos_rep")), method = 'pearson')$p.val) -> Hs_Mm_phos_corr_3_shared_timepoints
+ggplot(Hs_Mm_phos_corr_3_shared_timepoints, aes(x = species_r)) + geom_histogram(bins = 50) + labs(x = 'Pearson R', y = 'Count')
+
+## Conserved phosphorylation motif representative heatmaps
+plot_phos_site_heatmap_reduced(phos_site = 'DNMT3B S100,DPYSL2 T514', df = Hs_phos_scaled_reduced, scaling = 'row')
+plot_phos_site_heatmap_reduced(phos_site = 'HSP90AB1 S255,RPS6KB1 S447', df = Hs_phos_scaled_reduced, scaling = 'row')
+
+Mm_plot_phos_site_heatmap_reduced(df = Mm_phos_scaled_reduced, phos_site = 'Dnmt3b S116,Dpysl2 T514', scaling = 'row', sample_num = 9)
+Mm_plot_phos_site_heatmap_reduced(df = Mm_phos_scaled_reduced, phos_site = 'Hsp90ab1 S255,Rps6kb1 S447', scaling = 'row', sample_num = 9)
+
+## Fraction of kinase classes detected
+KinHub_kinases_all <- read.csv('KinHub_kinase_groups.txt', sep = '\t')
+KinHub_kinases_all %>% mutate(Detected_in_data = ifelse(UniprotID %in% Hs_ms_scaled$Uniprot, 'yes', 'no')) -> KinHub_kinases_all
+KinHub_kinases_all %>% group_by(Group) %>%
+  summarise(
+    total = n(),
+    yes_count = sum(Detected_in_data == "yes"),
+    no_count = sum(Detected_in_data == "no"),
+    yes = yes_count / total,
+    no = no_count / total
+  ) %>% select(Group, total, yes, no) %>% melt(id.vars = c('Group', 'total'), variable.name = 'Detected', value.name = 'Fraction') %>% mutate(Group_label = paste0(Group, ' (', total, ')')) -> KinHub_summary 
+KinHub_summary$Detected <- factor(KinHub_summary$Detected, levels = c('no', 'yes'))
+
+ggplot(KinHub_summary %>% filter(Detected == 'yes'), aes(y = reorder(Group_label, total), x = Fraction)) + geom_bar(position = 'stack', stat = 'identity', fill = '#2E3192') + labs(y = 'Kinase group', subtitle = 'Fraction of human kinases detected')
+
+## Correlation between kinase-substrate pairs
+phos_prot_subtracted_kinase_correlation_df %>% mutate(KS = paste0(Kinase, Phosphosite)) %>% filter(KS %in% KS_links$KS) -> PS_phos_prot_subtracted_kinase_correlation_df
+phos_prot_subtracted_kinase_correlation_df %>% mutate(KS = paste0(Kinase, Phosphosite)) %>% filter(KS %in% KS_links$KS) %>% mutate(R2 = Pearson_R^2) %>% ggplot(aes(x = Pearson_R)) + geom_histogram(bins = 30) + labs(x = 'Pearson R') #+ labs(subtitle = 'Correlation between kinase-substrate pairs (prot_subtracted)')
+ggsave('PS_kinase_substrate_correlation_distribution_prot_subtracted.pdf', units = 'cm', device = 'pdf', height = 10, width = 10)
+```
+

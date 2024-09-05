@@ -1,0 +1,401 @@
+---
+title: "Fig6_SupFig6"
+output: html_document
+date: "2024-09-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(ggrastr)
+library(cowplot)
+library(RColorBrewer)
+library(ggplot2)
+library(ggridges)
+library(ggpmisc)
+library(GGally)
+library(psych)
+library(ggpubr)
+library(reshape2)
+library(cowplot)
+library(umap)
+library(EnvStats)
+library(metR)
+library(conflicted)
+library(pheatmap)
+library(igraph)
+theme_set(theme_cowplot(rel_small = 10/12) + theme(axis.line = element_line(linewidth = .25), axis.ticks = element_line(linewidth = .25)))
+#setwd("/path/to/data")
+
+```
+
+```{r Functions}
+
+plot_disease_gene_heatmap <- function(disease_name, disease_db, clust_rows = F){
+  color_scale <- seq(-2, 2, by = .25)
+  sample_groups_p_hs_reduced <- data.frame(
+  Replicate = gsub(".*_p_", "", colnames(Hs_ms_scaled_reduced %>% select(contains('_p_rep')))),
+  Stage = case_when(
+      grepl("Primed", colnames(Hs_ms_scaled_reduced %>% select(contains('_p_rep')))) ~ "Primed",
+      grepl("Early", colnames(Hs_ms_scaled_reduced %>% select(contains('_p_rep')))) ~ "Early",
+      grepl("Late", colnames(Hs_ms_scaled_reduced %>% select(contains('_p_rep')))) ~ "Late",
+      TRUE ~ "Other"  # Add more conditions as needed
+    ), Species = rep(c("human"), c(9))) %>% filter(Stage != 'Other')
+  disease_db %>% filter(str_detect(disease.name, disease_name)) %>% pull(gene.symbol) %>% unique() -> disease_gene_list
+  df <- Hs_ms_scaled_reduced %>% filter(Gene.Symbol %in% disease_gene_list) %>% select(Gene.Symbol, contains('_p_')) %>% column_to_rownames('Gene.Symbol')
+  rownames(sample_groups_p_hs_reduced) <- colnames(df)
+  if (nrow(df) >1) {
+    clust_rows = T}
+  pheatmap(df %>% as.matrix(), 
+         cluster_rows = clust_rows, cluster_cols = F, show_rownames = TRUE, fontsize = 12, cellwidth = 14, cellheight = 14, border_color = 'black',
+         color = colorRampPalette(c('#2c7bb6', 'white', '#d7191c'))(length(color_scale)), scale = 'row',
+         breaks = color_scale, annotation_col = sample_groups_p_hs_reduced, angle_col = 90,
+         annotation_colors = list(Species = c(human = "#2E3192"),
+                                  Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                  Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), 
+         filename = paste0(disease_name, '_temporal_profile.pdf'), height = 10, width = 10)}
+
+
+calculate_disease_gene_set_correlation <- function(disease, source, plot_corr_dist = 'no') {
+  disease_genes <- DevDisDatabase_gencc_disease_collapsed %>% filter(disease.name == disease, Source == source) %>% 
+    pull(genes) %>% str_split(pattern = ' ') %>% unlist()
+  disease_gene_uniprots <- non_zero_merged_ms_df_3_shared_timepoint_log2_rtm %>% filter(Gene.Symbol %in% disease_genes) %>% pull(Uniprot)
+  disease_gene_uniprots <- intersect(disease_gene_uniprots, colnames(non_zero_merged_ms_df_3_shared_timepoint_log2_rtm_transposed))
+  Pearson_corr_vector <- non_zero_merged_ms_df_3_shared_timepoint_log2_rtm_pearson_corr_matrix[disease_gene_uniprots, disease_gene_uniprots] %>% .[upper.tri(., diag = F)]}
+
+get_gene_phenotype_matrix <- function(gene_list, phenotypes_df) {
+  genes <- gene_list
+  filtered_phenotypes <- phenotypes_df %>% filter(gene_symbol %in% genes)
+  unique_genes <- unique(filtered_phenotypes$gene_symbol)
+  unique_phenotypes <- unique(filtered_phenotypes$hpo_name)
+  gene_phenotype_matrix <- matrix(0, nrow = length(unique_genes), ncol = length(unique_phenotypes))
+  rownames(gene_phenotype_matrix) <- unique_genes
+  colnames(gene_phenotype_matrix) <- unique_phenotypes
+  for (gene in unique_genes) {
+    gene_phenotypes <- filtered_phenotypes %>% filter(gene_symbol == gene) %>% pull(hpo_name)
+    gene_phenotype_matrix[gene, gene_phenotypes] <- 1
+  }
+  
+  return(gene_phenotype_matrix)
+}
+
+plot_gene_heatmap_reduced <- function(df, genes, clust_rows = F, scaling){
+  outfile <- genes
+  if (scaling == 'row') {
+    color_scale <- seq(-2, 2, by = .25)
+    colorscale_range = colorRampPalette(c('#2c7bb6', 'white', '#d7191c'))(length(color_scale))
+    outfile <- paste0(outfile,'_', scaling)
+  } else if (scaling == 'none') {
+    color_scale <- seq(0, 15, by = .25)
+    colorscale_range = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale))
+    outfile <- paste0(outfile, '_',scaling)
+      }
+  sample_groups_p_hs_reduced <- data.frame(
+  Replicate = gsub(".*_p_", "", colnames(df %>% select(contains('_p_rep')))),
+  Stage = case_when(
+      grepl("Primed", colnames(df %>% select(contains('_p_rep')))) ~ "Primed",
+      grepl("Early", colnames(df %>% select(contains('_p_rep')))) ~ "Early",
+      grepl("Late", colnames(df %>% select(contains('_p_rep')))) ~ "Late",
+      TRUE ~ "Other"  # Add more conditions as needed
+    ), Species = rep(c("human"), c(9))) %>% filter(Stage != 'Other')
+  genes <- str_split(genes, pattern = ' ') %>% unlist()
+  df <- df %>% filter(Gene.Symbol %in% genes) %>% select(Gene.Symbol, contains('_p_')) %>% arrange(Gene.Symbol) %>% column_to_rownames('Gene.Symbol')
+  rownames(sample_groups_p_hs_reduced) <- colnames(df)
+  if (nrow(df) >1 & clust_rows == T) {
+    clust_rows = T}
+  pheatmap(df %>% as.matrix(), 
+         cluster_rows = clust_rows, cluster_cols = F, show_rownames = TRUE, fontsize = 12, cellwidth = 14, cellheight = 14, border_color = 'black', scale = scaling,
+         #color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)),
+         color = colorscale_range,
+         breaks = color_scale, annotation_col = sample_groups_p_hs_reduced, angle_col = 90,
+         annotation_colors = list(Species = c(human = "#2E3192"),
+                                  Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                  Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), 
+         filename = paste0(outfile, '_temporal_profile.pdf'), height = 10, width = 10)
+  graphics.off()}
+
+plot_phos_site_heatmap_reduced <- function(df, phos_site, clust_rows = F, scaling){
+  outfile <- phos_site
+  if (scaling == 'row') {
+    color_scale <- seq(-2, 2, by = .25)
+    colorscale_range = colorRampPalette(c('#2c7bb6', 'white', '#d7191c'))(length(color_scale))
+    outfile <- paste0(outfile,'_', scaling)
+  } else if (scaling == 'none') {
+    color_scale <- seq(0, 15, by = .25)
+    colorscale_range = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale))
+    outfile <- paste0(outfile,'_', scaling)
+      }
+  sample_groups_p_hs_reduced <- data.frame(
+  Replicate = gsub(".*_phos_", "", colnames(df %>% select(contains('_phos_rep')))),
+  Stage = case_when(
+      grepl("Primed", colnames(df %>% select(contains('_phos_rep')))) ~ "Primed",
+      grepl("Early", colnames(df %>% select(contains('_phos_rep')))) ~ "Early",
+      grepl("Late", colnames(df %>% select(contains('_phos_rep')))) ~ "Late",
+      TRUE ~ "Other"  # Add more conditions as needed
+    ), Species = rep(c("human"), c(9))) %>% filter(Stage != 'Other')
+  phos_site <- str_split(phos_site, pattern = ',') %>% unlist()
+  df <- df %>% filter(Gene_label %in% phos_site) %>% select(Gene_label, contains('_phos_')) %>% column_to_rownames('Gene_label')
+  print(df)
+  rownames(sample_groups_p_hs_reduced) <- colnames(df)
+  if (nrow(df) >1 & clust_rows == T) {
+    clust_rows = T}
+  pheatmap(df %>% as.matrix(), 
+         cluster_rows = clust_rows, cluster_cols = F, show_rownames = TRUE, fontsize = 12, cellwidth = 14, cellheight = 14, border_color = 'black', scale = scaling, #display_numbers = T,
+         #color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)),
+         color = colorscale_range,
+         breaks = color_scale, annotation_col = sample_groups_p_hs_reduced, angle_col = 90,
+         annotation_colors = list(Species = c(human = "#2E3192"),
+                                  Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                  Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), height = 10, width = 10,
+         filename = paste0(outfile, '_temporal_profile.pdf')) 
+  graphics.off()}
+
+createCooperativeProtein_graph <- function(prot_complex, source, num_cooperative_prots, anticorrelated_edges = 'Yes', comp_or_path, show_isoforms = 'Yes', Disease_db = DevDisDatabase_gencc_disease_collapsed, r_cutoff = 0.95){
+  library(igraph)
+  if (comp_or_path == 'complex') {
+    ## These are the protein complex members
+    Hs_complexome_CORUM %>% filter(ComplexName == prot_complex, Source == source) %>% distinct() %>% .$Members_clean %>% str_split(pattern = ' ') %>% unlist() -> prot_complex_members 
+    #frac_detected <- Hs_complexome_CORUM %>% filter(ComplexName == prot_complex) %>% mutate(Fraction_detected = Detected_members/Total_members) %>% .$Fraction_detected %>% unlist()
+    #frac_detected <- round(frac_detected *100, 2)
+    ## Filter complex edges qval < 0.01
+    pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(abs(Pearson_R) >= r_cutoff, qval < 0.01) %>% 
+      filter(Uniprot1 %in% prot_complex_members & Uniprot2 %in% prot_complex_members) %>% mutate(Type = 'Known') %>% distinct() -> prot_complex_network_df
+    }
+   if (comp_or_path == 'pathway'){
+     ## These are the protein complex members
+     Hs_pathways %>% filter(Name == prot_complex, Source == source) %>% distinct() %>% .$Members_clean %>%str_split(pattern = ' ') %>% unlist() -> prot_complex_members 
+     #frac_detected <- Hs_pathways %>% filter(Name == prot_complex) %>% mutate(Fraction_detected = Detected_members/Total_members) %>% .$Fraction_detected %>% unlist()
+     #frac_detected <- round(frac_detected *100, 2)
+     pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(qval < 0.01, abs(Pearson_R) >= r_cutoff) %>%
+       filter(Uniprot1 %in% prot_complex_members & Uniprot2 %in% prot_complex_members) %>% mutate(Type = 'Known')%>% distinct() -> prot_complex_network_df
+   }
+  if (comp_or_path == 'disease'){
+    Disease_db %>% filter(disease.name == prot_complex, Source == source) %>% distinct() %>% .$Members_clean %>%str_split(pattern = ' ') %>% unlist() -> prot_complex_members
+    pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(qval < 0.01, abs(Pearson_R) >= r_cutoff) %>%
+       filter(Uniprot1 %in% prot_complex_members & Uniprot2 %in% prot_complex_members) %>% mutate(Type = 'Known')%>% distinct() -> prot_complex_network_df
+    }
+  if (anticorrelated_edges == 'No') {
+    prot_complex_network_df  <- prot_complex_network_df %>% filter(Pearson_R > 0)}
+  if (show_isoforms == 'No') {
+    prot_complex_network_df <- prot_complex_network_df %>% filter(Uniprot1 %in% proteins_in_corr_network_no_isoforms & Uniprot2 %in% proteins_in_corr_network_no_isoforms)}
+  ## This is the protein complex
+  ## Filter the new_interactors by complex
+  if (num_cooperative_prots !=0) {
+    if (comp_or_path == 'complex') {
+      complex_new_interactors <- new_interactors_df_3_shared_timepoints %>% filter(ComplexName == prot_complex) %>% mutate(neglog_fes_padj = -log10(fes_padj)) %>% arrange(-neglog_fes_padj) %>% head(num_cooperative_prots)
+      pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+        filter((Uniprot1 %in% prot_complex_members & Uniprot2 %in% complex_new_interactors$new_interactor) | (Uniprot2 %in% prot_complex_members & Uniprot1 %in% complex_new_interactors$new_interactor)) %>% 
+        mutate(Type = 'New') %>% filter(Pearson_R >= r_cutoff)  %>% select(-Uniprot1_full, -Uniprot2_full) -> new_interactor_network_df
+      }
+    if (comp_or_path == 'pathway'){
+      if (prot_complex %in% unique(Oxphos_new_interactors$Name)) {
+        print('In OxPhos')
+        pathways_new_interactors <- Oxphos_new_interactors %>% filter(Name == prot_complex) %>% mutate(neglog_fes_padj = -log10(fes_padj)) %>% arrange(-neglog_fes_padj) %>% head(num_cooperative_prots)
+      pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+        filter((Uniprot1 %in% prot_complex_members & Uniprot2 %in% pathways_new_interactors$new_interactor) | (Uniprot2 %in% prot_complex_members & Uniprot1 %in% pathways_new_interactors$new_interactor)) %>%
+        mutate(Type = 'New') %>% filter(Pearson_R > r_cutoff) %>% select(-Uniprot1_full, -Uniprot2_full)-> new_interactor_network_df
+      print(pathways_new_interactors)
+      } else {
+        pathways_new_interactors <- pathway_new_interactors_3_shared_timepoints %>% filter(Name == prot_complex) %>% mutate(neglog_fes_padj = -log10(fes_padj)) %>% arrange(-neglog_fes_padj) %>% head(num_cooperative_prots)
+      pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+        filter((Uniprot1 %in% prot_complex_members & Uniprot2 %in% pathways_new_interactors$new_interactor) | (Uniprot2 %in% prot_complex_members & Uniprot1 %in% pathways_new_interactors$new_interactor)) %>%
+        mutate(Type = 'New') %>% filter(Pearson_R > r_cutoff) %>% select(-Uniprot1_full, -Uniprot2_full)-> new_interactor_network_df
+      print(pathways_new_interactors)
+          }
+    }
+    if (new_interactor_network_df %>% nrow() != 0) {
+      ## Do this to get edge stats
+    if (new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>% nrow() != 0 & new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>% nrow() != 0){
+     full_join(new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>%
+                 group_by(Uniprot1) %>% summarise(count_Uniprot1 = n()) %>% mutate_all(~ifelse(is.na(.), 0, .)) %>% ungroup(), 
+               new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>%
+                 group_by(Uniprot2) %>% summarise(count_Uniprot2 = n()) %>% mutate_all(~ifelse(is.na(.), 0, .)) %>% ungroup(), 
+               by = c('Uniprot1' = 'Uniprot2')) %>% mutate(count = count_Uniprot1 + count_Uniprot2)  %>% select(Uniprot1, count) %>% 
+      arrange(-count) -> new_interactor_edge_stats
+    } else if (new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>% nrow() == 0 & new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>% nrow() != 0){
+      new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>%
+        group_by(Uniprot2) %>% summarise(count_Uniprot2 = n()) %>% mutate_all(~ifelse(is.na(.), 0, .)) %>% ungroup() %>% mutate(count = count_Uniprot2) %>% arrange(-count) -> new_interactor_edge_stats
+    } else if (new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>% nrow() != 0 & new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>% nrow() == 0){
+      new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>%
+        group_by(Uniprot1) %>% summarise(count_Uniprot1 = n()) %>% mutate_all(~ifelse(is.na(.), 0, .)) %>% ungroup() %>% mutate(count = count_Uniprot1) %>% arrange(-count) -> new_interactor_edge_stats
+    }
+    new_interactor_network_df %>% 
+    filter((Uniprot1 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots] & Uniprot2 %in% prot_complex_members) | (Uniprot2 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots] & Uniprot1 %in% prot_complex_members)) %>% select(-Uniprot1_join, -Uniprot2_join, Uniprot1, Uniprot2, Pearson_R, pval, qval) -> new_interactor_network_df
+    if (comp_or_path == 'complex'){
+      remaining_interactor_network_df <- pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+      filter(Uniprot1 %in% complex_new_interactors$new_interactor & Uniprot2 %in% complex_new_interactors$new_interactor) %>% 
+      filter(Uniprot1 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots] & Uniprot2 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots]) %>%
+      mutate(Type = 'New') %>% filter(Pearson_R >=r_cutoff) %>% select(-Uniprot1_join, -Uniprot2_join, -Uniprot1_full, -Uniprot2_full)
+      }
+    if (comp_or_path == 'pathway'){
+      remaining_interactor_network_df <- pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+      filter(Uniprot1 %in% pathways_new_interactors$new_interactor & Uniprot2 %in% pathways_new_interactors$new_interactor) %>% 
+      filter(Uniprot1 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots] & Uniprot2 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots]) %>%
+      mutate(Type = 'New') %>% filter(Pearson_R >=r_cutoff) %>% select(-Uniprot1_join, -Uniprot2_join, -Uniprot1_full, -Uniprot2_full)
+      }
+    } else{print('no cooperative proteins found, making cooperative proteins = 0 for graph plotting')
+      num_cooperative_prots = 0}
+    
+    #print(prot_complex_network_df %>% colnames())
+    #print(new_interactor_network_df %>% colnames())
+    #print(remaining_interactor_network_df %>% colnames())
+    if (num_cooperative_prots !=0) {
+      prot_complex_network_df <- prot_complex_network_df %>% select(Pearson_R, pval, qval, Uniprot1, Uniprot2, Type)
+      #print(colnames(prot_complex_network_df))
+      #print(colnames(new_interactor_network_df))
+      #print(colnames(remaining_interactor_network_df))
+      rbind(prot_complex_network_df, new_interactor_network_df, remaining_interactor_network_df) %>%
+      mutate(abs_pearson =  abs(Pearson_R)) -> toy_network_df} 
+    }
+  if (num_cooperative_prots == 0) {
+    prot_complex_network_df %>% mutate(abs_pearson =  abs(Pearson_R)) -> toy_network_df}
+  ## This is the network but with uniprot IDs
+  ## This is the network to make the graph from
+  toy_network_df <- left_join(toy_network_df, Hs_uniprot_gene_annotations %>% select(Entry, Gene.Symbol), by = c('Uniprot1' = 'Entry')) %>% 
+    rename(Gene.Symbol1 = 'Gene.Symbol') %>% 
+    left_join(Hs_uniprot_gene_annotations %>% select(Entry, Gene.Symbol), by = c('Uniprot2' = 'Entry')) %>% rename(Gene.Symbol2 = 'Gene.Symbol') %>% 
+    select(Gene.Symbol1, Gene.Symbol2, Pearson_R, abs_pearson, pval, qval, Type, Uniprot1, Uniprot2, Type) %>% arrange(Type, Gene.Symbol1, Gene.Symbol2, Pearson_R)
+  known_vertices <- c(toy_network_df %>% filter(Uniprot1 %in% prot_complex_members) %>% .$Gene.Symbol1, 
+                      toy_network_df %>% filter(Uniprot2 %in% prot_complex_members) %>% .$Gene.Symbol2) %>% unlist() %>% unique() %>% sort()
+  new_vertices <- c(toy_network_df %>% filter(Type == 'New') %>% filter(!Uniprot1 %in% prot_complex_members) %>% .$Gene.Symbol1, 
+                    toy_network_df %>% filter(Type == 'New') %>% filter(!Uniprot2 %in% prot_complex_members) %>% .$Gene.Symbol2) %>% unlist() %>% unique() #%>% sort()
+  #view(new_interactor_network_df)
+  if (comp_or_path == 'complex' & num_cooperative_prots !=0) {
+    new_vertices <- new_vertices[match(complex_new_interactors$Gene.Symbol, new_vertices)] %>% unique() %>% .[!is.na(.)]
+    print(new_vertices)}
+  if (comp_or_path == 'pathway' & num_cooperative_prots !=0) {
+    new_vertices <- new_vertices[match(pathways_new_interactors$Gene.Symbol, new_vertices)] %>% unique() %>% .[!is.na(.)]}
+  ordered_vertices <- c(known_vertices, new_vertices)
+  print(ordered_vertices)
+  if (anticorrelated_edges == 'No') {toy_network_df%>% filter(Pearson_R >0) -> toy_network_df}
+  ## Make igraph
+  library(igraph)
+  graph_from_data_frame(toy_network_df, directed = FALSE, vertices = ordered_vertices) -> graph_test
+  E(graph_test)$width <- toy_network_df$abs_pearson
+  radian.rescale <- function(x, start=0, direction=1) {
+    c.rotate <- function(x) (x + start) %% (2 * pi) * direction
+    c.rotate(scales::rescale(x, c(0, 2 * pi), range(x)))}
+  V(graph_test)$color <- ifelse(ordered_vertices %in% known_vertices, "#ec008c", "#fdae61") #f15a29
+  if (comp_or_path == 'complex' & num_cooperative_prots !=0){
+    node_size <- c(setNames(nm = known_vertices, rep(1, length(known_vertices))), setNames(complex_new_interactors$neglog_fes_padj, new_vertices) * 0.25)
+  } else if (comp_or_path == 'complex' & num_cooperative_prots ==0 ){
+      node_size <- setNames(nm = known_vertices, rep(1, length(known_vertices)))}
+  if (comp_or_path == 'pathway' & num_cooperative_prots !=0){
+    node_size <- c(setNames(nm = known_vertices, rep(1, length(known_vertices))), setNames(pathways_new_interactors$neglog_fes_padj, new_vertices) * 0.25)
+  } else if (comp_or_path == 'pathway' & num_cooperative_prots == 0) {
+     node_size <- setNames(nm = known_vertices, rep(1, length(known_vertices)))}
+  if (comp_or_path == 'disease' & num_cooperative_prots !=0){
+    node_size <- c(setNames(nm = known_vertices, rep(1, length(known_vertices))), setNames(complex_new_interactors$neglog_fes_padj, new_vertices) * 0.25)
+  } else if (comp_or_path == 'disease' & num_cooperative_prots ==0 ){
+      node_size <- setNames(nm = known_vertices, rep(1, length(known_vertices)))}
+  print(node_size %>% cat)
+  E(graph_test)$color <- ifelse(toy_network_df$Type == 'New', '#fdae61',
+                             ifelse(toy_network_df$Pearson > 0, '#4575b4', '#d73027'))
+  lab.locs <- radian.rescale(x=1:length(ordered_vertices), direction=-1, start=0)
+  #print(lab.locs)
+  print('making graph')
+  plot(graph_test, layout = layout_in_circle(graph = graph_test), 
+     vertex.label.cex = 10/12, vertex.label.dist = 2.5, vertex.label.color = 'black', vertex.label.degree = lab.locs, vertex.size = node_size * 10,
+     vertex.frame.width = 1/3, vertex.label.family="Helvetica",
+     edge.width = 2/3, main=paste(prot_complex))
+  return(graph_test)
+  #return(node_size)
+  }
+
+save_network_plot <- function(prot_complex, w = 6, h = 6, source, anticorrelated_edges, num_cooperative_prots = 0, comp_or_path) {
+  prot_complex_filename = gsub("/", "_", prot_complex)
+  pdf(paste0(prot_complex_filename,'.pdf'), width = w, height = h, family = 'Helvetica', paper = 'letter')
+  createCooperativeProtein_graph(prot_complex = prot_complex, source = source, num_cooperative_prots = num_cooperative_prots, anticorrelated_edges = anticorrelated_edges, comp_or_path = comp_or_path)
+  dev.off()
+}
+
+```
+
+
+```{r Fig.6}
+## Disease gene heatmaps
+plot_disease_gene_heatmap(DevDisDatabase, disease_name = 'LEIGH SYNDROME')
+plot_disease_gene_heatmap(DevDisDatabase, disease_name = 'OSTEOPETROSIS AUTOSOMAL RECESSIVE TYPE 3')
+plot_disease_gene_heatmap(gencc, disease_name = 'Huntington disease')
+plot_disease_gene_heatmap(gencc, disease_name = 'Ritscher-Schinzel syndrome')
+plot_disease_gene_heatmap(gencc, disease_name = 'intellectual disability, autosomal dominant 40')
+
+## Disease gene correlation histogram
+ggplot(DevDisDatabase_gencc_disease_collapsed %>% filter(Members_detected_in_network >1, Source == 'GenCC'), aes(x = Mean_Pearson_R)) + geom_histogram(bins = 20) + 
+  geom_label_repel(data = DevDisDatabase_gencc_disease_collapsed %>% 
+                     filter(Source == 'GenCC', 
+                            disease.name %in% c('Leigh syndrome', 'Noonan syndrome', 'Charcot-Marie-Tooth disease', 'syndromic intellectual disability')), 
+                   aes(label = disease.name, y = Mean_Pearson_R), size = 3, min.segment.length = .1, max.overlaps = 10, box.padding = 1) + labs(x = 'Mean Pearson R', y = 'Count', subtitle = paste0('n =', nrow(DevDisDatabase_gencc_disease_collapsed %>% filter(Members_detected_in_network>1, Source == 'GenCC', !is.nan(Mean_Pearson_R))), ' (GenCC diseases)'))
+ggsave('Mean_Pearson_R_by_genCC disease.pdf', device = 'pdf', units = 'cm', height = 8, width = 10)
+
+## Complexes associated with disease
+Hs_complexome_CORUM %>% select(ComplexName, Members_clean, Source, Total_members, Detected_members) %>% separate_rows(Members_clean, sep = ' ') %>% rename(Member = 'Members_clean') %>% inner_join(DevDisDatabase %>% select(gene.symbol, Uniprot, disease.name), by = c('Member' = 'Uniprot')) -> Hs_complexome_CORUM_long #%>% inner_join(gencc %>% select(disease.name, gene.symbol), by = c('gene.symbol')) %>% rename(DDD_disease_name = 'disease.name.x', GenCC_disease_name = 'disease.name.y') %>% distinct()#
+
+Hs_complexome_CORUM %>% select(ComplexName, Members_clean, Source, Total_members, Detected_members) %>% separate_rows(Members_clean, sep = ' ') %>% select(Source, ComplexName, Total_members, Detected_members, Member = Members_clean) %>% inner_join(DevDisDatabase %>% select(disease.name, gene.symbol, Uniprot), by = c('Member' = 'Uniprot')) -> Hs_complexome_CORUM_DDD_associations
+
+Hs_complexome_CORUM_DDD_associations %>% distinct() %>% group_by(Source, ComplexName, Total_members, Detected_members) %>% 
+  summarise(disease_count = n(), 
+            diseases = paste(disease.name, collapse = '|')) %>% arrange(-disease_count) -> Hs_complexome_CORUM_DDD_associations_summary
+
+
+ggplot(Hs_complexome_CORUM_DDD_associations_summary, aes(x = reorder(ComplexName, disease_count), y = disease_count, group =1)) + geom_point(aes(color = Source)) +
+  scale_color_manual(values = c('#31a354','#c2e699')) + labs(x = 'Complex', y = '# Developmental disorders') + geom_area(fill = 'grey') +
+  geom_label_repel(data =  Hs_complexome_CORUM_DDD_associations_summary %>% filter(ComplexName %in% c('Mitochondrial respiratory chain complex I' , 
+                                                                                                      'Commander complex', 
+                                                                                                      '60S cytosolic large ribosomal subunit', 
+                                                                                                      'Core mediator complex', 'Spliceosome, E complex')),
+                   aes(label = ComplexName), 
+                   min.segment.length = 0.2, box.padding = .5, size = 3, segment.size = 0.1, max.overlaps = 20, label.size = 0.25) + 
+  theme(legend.position = 'top', legend.title = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+## Commander gene phenotype matrix
+
+Commander_gene_phenotype_matrix <- get_gene_phenotype_matrix(V(Commander_graph)$name, phenotypes_df = Hs_phenotypes)
+
+Commander_gene_phenotype_matrix %>% pheatmap(show_colnames = F, color = c('#ffffcc', '#253494'), fontsize = 12, legend = F, height = 3.25, width = 6, border_color = NA, filename = 'Commander_gene_phenotype_associations.pdf')
+
+```
+
+```{r Sup.Fig.6}
+## Cooperative edge evidence in Bioplex stats
+new_interactors_df_3_shared_timepoints %>% filter(Gene.Symbol %in% gencc$gene.symbol) %>% filter(BioGrid_validation == 'yes' | BioPlex_validation == 'yes') %>% group_by(Gene.Symbol, Source) %>% distinct() %>% summarise(count = n()) %>% arrange(-count) %>% group_by(Source) %>% summarise(gene_count = n()) %>% mutate(DiseaseDB = 'GenCC') %>% rbind(new_interactors_df_3_shared_timepoints %>% filter(Gene.Symbol %in% DevDisDatabase$gene.symbol) %>% filter(BioGrid_validation == 'yes' | BioPlex_validation == 'yes') %>% group_by(Gene.Symbol, Source) %>% distinct() %>% summarise(count = n()) %>% arrange(-count) %>% group_by(Source) %>% summarise(gene_count = n()) %>% mutate(DiseaseDB = 'DDD'))%>% ggplot(aes(x = Source, y = gene_count, fill = DiseaseDB)) + geom_bar(stat = 'identity', position = 'dodge') + labs(y = 'Count') + labs(subtitle = 'Cooperative disease edges w/ BioPlex evidence') + theme(legend.position = 'top', legend.title = element_blank())
+
+## Network plots
+save_network_plot(prot_complex = 'WP_OXIDATIVE_PHOSPHORYLATION', source = 'WP', anticorrelated_edges = 'No', num_cooperative_prots = 0, comp_or_path = 'pathway', h = 10, w = 10)
+
+save_network_plot(prot_complex = 'Commander complex', source = 'EMBL_Complexome', num_cooperative_prots = 200, anticorrelated_edges = 'Yes', comp_or_path = 'complex')
+
+## Commander heatmaps
+Mm_ms_raw %>% select(Gene.Symbol, contains('_p_rep'), -contains('mNaive')) %>% filter(Gene.Symbol %in% Mm_commander_genes) %>% mutate(mprot.gmean = geometric.mean(c_across(mPrimed_p_rep1:mLate_p_rep3))) %>%
+  mutate_at(vars(contains('_p_rep')), ~ log2(./mprot.gmean)) %>% select(-mprot.gmean) %>% 
+  column_to_rownames('Gene.Symbol') %>% as.matrix() %>% 
+  pheatmap(show_rownames = TRUE, fontsize = 12, cellwidth = 14, cellheight = 14, border_color = 'black', scale = 'row', cluster_rows = F, cluster_cols = F,
+           color = colorRampPalette(c('#2c7bb6', 'white', '#d7191c'))(length(seq(-2, 2, by = .25))),
+           filename = 'Mm_commander_temporal_profile.pdf', height = 10, width = 10)
+
+plot_gene_heatmap_reduced(genes = 'COMMD1 COMMD2 COMMD3 COMMD4 COMMD5 COMMD6 COMMD7 COMMD8 COMMD9 COMMD10 CCDC22 CCDC93 DENND10 VPS35L VPS29 VPS26C', scaling = 'row', clust_rows = F)
+
+## Disease associated with phosphorylated proteins, phosphosites and kinases
+## Number of phos sites associated with disease (from PS)
+PS_disease_associated_sites %>% filter(Gene_label %in% Hs_phos_scaled_reduced$Gene_label) %>% filter(!str_detect(DISEASE, 'cancer'),!str_detect(DISEASE, 'oma'), !str_detect(DISEASE, 'mia'), !str_detect(DISEASE, 'CRPC'), !str_detect(DISEASE, 'inflam')) %>% pull(Gene_label) %>% unique() %>% length() -> PS_phosphosite_disease_count
+
+## Number of disease genes with phos sites detected
+intersect(Hs_phos_scaled$Gene.Symbol, DevDisDatabase$gene.symbol) %>% unique() %>% length() -> Hs_disease_prots_with_phos
+Hs_disease_prots_with_phos
+## Kinases associated with diseases
+intersect(DevDisDatabase$Uniprot, KinHub_kinases$UniprotID) %>% length() -> Hs_disease_kinases
+
+Phos_kinase_disease_summary_df <- data.frame(Class = c('Phosphosites', 'Phosphorylated proteins', 'Kinases'), Count = c(PS_phosphosite_disease_count, Hs_disease_prots_with_phos, Hs_disease_kinases))
+ggplot(Phos_kinase_disease_summary_df, aes(y = reorder(Class, -Count), x = Count)) + geom_bar(stat = 'identity') + theme(axis.title.y = element_blank()) + labs(subtitle = 'Phosphorylated proteins, Kinases and Phosphosites detected associated with developmental disorders') 
+ggsave('Hs_phosphosites_kinases_phosphorylated_proteins_dev_disorders_association.pdf', device = 'pdf', height = 10, width = 15, units = 'cm')
+
+## Representative examples
+plot_gene_heatmap_reduced(genes = 'TCF20 NONO CDK13', scaling = 'row', clust_rows = F)
+plot_phos_site_heatmap_reduced(phos_site = 'CDK13 T494,CDK13 S383,NONO T450,TCF20 S574,TCF20 T1671,TCF20 S1522', df = Hs_phos_scaled_reduced, scaling = 'row')
+
+plot_gene_heatmap_reduced(genes = 'TCF20 NONO CDK13', scaling = 'row', clust_rows = F, df = Hs_ms_raw_reduced)
+plot_phos_site_heatmap_reduced(phos_site = 'CDK13 T494,CDK13 S383,NONO T450,TCF20 S574,TCF20 T1671,TCF20 S1522', df = Hs_phos_scaled_reduced, scaling = 'none')
+
+```
+

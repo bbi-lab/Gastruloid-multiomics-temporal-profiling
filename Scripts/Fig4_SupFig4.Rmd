@@ -1,0 +1,477 @@
+---
+title: "Fig4_SupFig4"
+output: html_document
+date: "2024-09-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(ggrastr)
+library(cowplot)
+library(RColorBrewer)
+library(ggplot2)
+library(ggridges)
+library(ggpmisc)
+library(GGally)
+library(psych)
+library(ggpubr)
+library(reshape2)
+library(cowplot)
+library(umap)
+library(EnvStats)
+library(metR)
+library(conflicted)
+library(pheatmap)
+library(igraph)
+theme_set(theme_cowplot(rel_small = 10/12) + theme(axis.line = element_line(linewidth = .25), axis.ticks = element_line(linewidth = .25)))
+#setwd("/path/to/data")
+
+```
+
+```{r Functions}
+make_temporal_heatmap_rna <- function(df, gene_list, outfile, cell_height, cell_width, species = 'both', clust_rows = TRUE) {
+  gene_list <- unlist(str_split(gene_list, pattern = ' '))
+  print(gene_list)
+  color_scale <- seq(-2, 2, by = .01)
+  if (species =='both'){
+    df %>% filter(symbol %in% gene_list) %>%
+      select(contains('_r_rep')) %>% as.matrix() -> rna_matrix_for_heatmap
+    rownames(rna_matrix_for_heatmap) <- df %>% filter(symbol %in% gene_list) %>% .$symbol
+    print(rna_matrix_for_heatmap)
+    sample_groups <- ifelse(grepl("^h", colnames(rna_matrix_for_heatmap)), "h", "m")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_r_", "", colnames(rna_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(rna_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(rna_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(rna_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(rna_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human", "mouse"), c(10, 8)))
+    row.names(sample_groups) <- colnames(rna_matrix_for_heatmap)
+  } else if (species == 'human') {
+    df %>% filter(symbol %in% gene_list) %>%
+      select(starts_with('h')) %>% select(contains('_r_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> rna_matrix_for_heatmap
+    rownames(rna_matrix_for_heatmap) <- df %>% filter(symbol %in% gene_list) %>% .$symbol
+    sample_groups <- ifelse(grepl("^h", colnames(rna_matrix_for_heatmap)), "h", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_r_", "", colnames(rna_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(rna_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(rna_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(rna_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(rna_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human"), c(10)))
+    row.names(sample_groups) <- colnames(rna_matrix_for_heatmap)
+  } else if (species == 'mouse') {
+    df %>% filter(symbol.y %in% gene_list) %>% 
+      select(starts_with('m')) %>% select(contains('_r_rep')) %>% as.matrix() -> rna_matrix_for_heatmap
+    rownames(rna_matrix_for_heatmap) <- df %>% filter(symbol.y %in% gene_list) %>% .$symbol.y
+    sample_groups <- ifelse(grepl("^m", colnames(rna_matrix_for_heatmap)), "m", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_r_", "", colnames(rna_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(rna_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(rna_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(rna_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(rna_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("mouse"), c(8)))
+    row.names(sample_groups) <- colnames(rna_matrix_for_heatmap)    
+    }
+  rna_matrix_for_heatmap <- rna_matrix_for_heatmap[gene_list, ]
+  pheatmap(rna_matrix_for_heatmap, cluster_rows = clust_rows, cluster_cols = FALSE, show_rownames = TRUE, show_colnames = TRUE, 
+           color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)), breaks = color_scale, annotation_col = sample_groups,
+           annotation_colors = list(Species = c(human = "#2E3192", mouse = "#00AEEF"),
+                                    Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9'),
+                                    Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), legend = TRUE,
+           width=10, height=10, cellwidth = cell_width, cellheight = cell_height, angle_col = 90,  
+           filename = paste0(outfile, '.pdf')) -> pheatmap_plot
+  graphics.off()
+  return(pheatmap_plot)
+}
+
+
+plot_rvp_fc_complexes <- function(string_df, complex) {
+  Mm_complexome_rvp_discordance %>% filter(Recommended.name == complex) %>% pull(Complex_members) %>% str_split(pattern = ' ') %>% unlist() -> complex_members
+  string_df <- string_df %>% filter(Uniprot %in% complex_members)
+  string_df %>% melt(measure.vars = c('RNA_l2fc', 'Protein_l2fc'), variable.name = 'Type', value.name = 'l2fc') %>% filter(Uniprot %in% complex_members) %>% mutate(Type = str_remove(Type, '_l2fc')) %>% ggplot(aes(x = fct_relevel(Type, "RNA", "Protein"), y = l2fc, group = Uniprot)) + geom_line(color = 'grey') + geom_point()+ geom_signif(comparisons= list(c("RNA", "Protein")), tip_length = 0.01, map_signif_level = TRUE, textsize = 3, y = 3, size = 1/3, test = t.test) + labs(y = 'log2FC', subtitle = complex) + ylim(-3.25,3.25) + theme(axis.title.x = element_blank())
+}
+
+merged_rvp_disc_GO_plotter <- function(df) {
+  up <- df %>% filter(pearson_correlation >= 0.75) %>% pull(Uniprot)
+  down <- df %>% filter(pearson_correlation <= -0.75) %>% pull(Uniprot)
+  up_go <- as.data.frame(enrichGO(gene = up, OrgDb = 'org.Hs.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = df$Uniprot, pAdjustMethod = 'BH', pvalueCutoff = .05)) %>% dplyr::filter(p.adjust < 0.05) %>% mutate(Type = 'Correlated') %>% arrange(p.adjust)
+  down_go <- as.data.frame(enrichGO(gene = down, OrgDb = 'org.Hs.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = df$Uniprot, pAdjustMethod = 'BH', pvalueCutoff = .05)) %>% dplyr::filter(p.adjust < 0.05) %>% mutate(Type = 'Anticorrelated') %>% arrange(p.adjust)
+  df_go <- rbind(up_go, down_go) %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1])) %>% filter(GO_term_size <=150)
+  plot <- ggplot(df_go, aes(x = reorder(Description, Count), y = Type, color = p.adjust, size = Count)) +
+    geom_point() + #geom_bar(stat = 'identity') + #coord_capped_cart(bottom = 'both', right = 'both') +
+    coord_flip() + 
+    scale_color_gradientn(colors = rev(brewer.pal(3, 'YlOrRd')), limits = c(0.001, 0.05), oob = scales::squish) + scale_size_continuous(limits=c(0,1000), breaks=c(10,20,30,40,50), range = c(1,10)) +
+    theme(axis.title.y = element_blank(),
+          legend.title = element_text(size = 12), legend.text = element_text(size = 10),
+          axis.title.x = element_blank(), plot.title = element_text(size = 12, face = 'plain'))
+  return(df_go)
+  }
+
+make_temporal_heatmap <- function(df, gene_list, outfile, cell_height, cell_width, species = 'both', clust_rows = TRUE) {
+  gene_list <- unlist(str_split(gene_list, pattern = ' '))
+  print(gene_list)
+  color_scale <- seq(0, 15, by = .01)
+  if (species =='both'){
+    df %>% filter(Gene.Symbol %in% gene_list) %>%
+      select(contains('_p_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> prot_matrix_for_heatmap
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Symbol %in% gene_list) %>% .$Gene.Symbol
+    sample_groups <- ifelse(grepl("^h", colnames(prot_matrix_for_heatmap)), "h", "m")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_p_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human", "mouse"), c(15, 12)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)
+  } else if (species == 'human') {
+    df %>% filter(Gene.Symbol %in% gene_list) %>%
+      select(starts_with('h')) %>% select(contains('_p_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> prot_matrix_for_heatmap
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Symbol %in% gene_list) %>% .$Gene.Symbol
+    sample_groups <- ifelse(grepl("^h", colnames(prot_matrix_for_heatmap)), "h", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_p_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("human"), c(15)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)
+  } else if (species == 'mouse') {
+    df %>% filter(Gene.Symbol %in% gene_list) %>% 
+      select(starts_with('m')) %>% select(contains('_p_rep')) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), everything()) %>% as.matrix() -> prot_matrix_for_heatmap
+    rownames(prot_matrix_for_heatmap) <- df %>% filter(Gene.Symbol %in% gene_list) %>% .$Gene.Symbol
+    sample_groups <- ifelse(grepl("^m", colnames(prot_matrix_for_heatmap)), "m", "")
+    sample_groups <- data.frame(
+      Replicate = gsub(".*_p_", "", colnames(prot_matrix_for_heatmap)),
+      Stage = case_when(grepl("Naive", colnames(prot_matrix_for_heatmap)) ~ "Naive",
+                        grepl("Primed", colnames(prot_matrix_for_heatmap)) ~ "Primed",
+                        grepl("Early", colnames(prot_matrix_for_heatmap)) ~ "Early",
+                        grepl("Late", colnames(prot_matrix_for_heatmap)) ~ "Late",TRUE ~ "Other"), 
+      Species = rep(c("mouse"), c(12)))
+    row.names(sample_groups) <- colnames(prot_matrix_for_heatmap)    
+    }
+  prot_matrix_for_heatmap <- prot_matrix_for_heatmap[gene_list, ]
+  pheatmap(prot_matrix_for_heatmap, cluster_rows = clust_rows, cluster_cols = FALSE, show_rownames = TRUE, show_colnames = TRUE, 
+           color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)), 
+           breaks = color_scale, annotation_col = sample_groups, #'' ##
+           annotation_colors = list(Species = c(human = "#2E3192", mouse = "#00AEEF"),
+                                    Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                    Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c')), legend = FALSE,
+           width=10, height=10, cellwidth = cell_width, cellheight = cell_height, angle_col = 90,
+           filename = paste0(outfile, '.pdf')) -> pheatmap_plot
+  graphics.off()
+  return(pheatmap_plot)
+}
+
+GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, draw_group = function(self, data, ..., draw_quantiles = NULL) {
+  data <- transform(data, xminv = x - violinwidth * (x - xmin), xmaxv = x + violinwidth * (xmax - x))
+  grp <- data[1, "group"]
+  newdata <- plyr::arrange(transform(data, x = if (grp %% 2 == 1) xminv else xmaxv), if (grp %% 2 == 1) y else -y)
+  newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+  newdata[c(1, nrow(newdata) - 1, nrow(newdata)), "x"] <- round(newdata[1, "x"])
+
+  if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
+    stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <=
+      1))
+    quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+    aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+    aesthetics$alpha <- rep(1, nrow(quantiles))
+    both <- cbind(quantiles, aesthetics)
+    quantile_grob <- GeomPath$draw_panel(both, ...)
+    ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+  }
+  else {
+    ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+  }
+})
+
+geom_split_violin <- function(mapping = NULL, data = NULL, stat = "ydensity", position = "identity", ..., 
+                              draw_quantiles = NULL, trim = TRUE, scale = "area", na.rm = FALSE, 
+                              show.legend = NA, inherit.aes = TRUE) {
+  layer(data = data, mapping = mapping, stat = stat, geom = GeomSplitViolin, 
+        position = position, show.legend = show.legend, inherit.aes = inherit.aes, 
+        params = list(trim = trim, scale = scale, draw_quantiles = draw_quantiles, na.rm = na.rm, ...))
+}
+
+
+
+```
+
+
+```{r Fig. 4}
+## Distribution of RNA-protein correlation
+merged_rvp_corr_df_long <- merged_temporal_prot_rna_df_long_rvp_corr %>% group_by(symbol, Uniprot) %>% 
+  summarise(pearson_correlation = cor.test(r_gMean, p_gMean, method = 'pearson')$estimate, pval = cor.test(r_gMean, p_gMean, method = 'pearson')$p.value, 
+            spearman_rho = cor.test(r_gMean, p_gMean, method = 'spearman')$estimate, s_pval = cor.test(r_gMean, p_gMean, method = 'spearman')$p.value)
+ggplot(merged_rvp_corr_df_long, aes(x = pearson_correlation)) + 
+  geom_histogram(bins = 40) +
+  geom_vline(xintercept = 0.3922501, linetype = 2) +
+  geom_label_repel(data = merged_rvp_corr_df_long %>% filter(symbol %in% c('SOX2', 'STAT3', 'TUBB6', 'LAMTOR2', 'KRAS', 'CTNNB1')), 
+                   aes(label = symbol, y = pearson_correlation), min.segment.length = 0) +
+  labs(subtitle = paste0('RNA v/s Protein correlation of ', nrow(merged_rvp_corr_df_long), ' shared genes across human and mice'), y = 'Number of genes', x = 'Pearson R') -> merged_rvp_pearsonR_dist
+merged_rvp_pearsonR_dist
+ggsave(filename = 'merged_9_timepoints_pearson_corr_including_pseudocount_log2rtsm.pdf', units = 'cm', height = 10, width = 10, device = 'pdf')
+
+## Correlated and anticorrelated GO terms
+merged_rvp_disc_GO_plotter(merged_rvp_corr_df_long) -> test_go
+
+ggplot(test_go %>% group_by(Type) %>% arrange(p.adjust) %>% slice(1:5), aes(x = reorder(Description, Count), y = Type, color = p.adjust, size = Count)) +
+    geom_point() + #geom_bar(stat = 'identity') + #coord_capped_cart(bottom = 'both', right = 'both') +
+    coord_flip() + labs(subtitle = 'Anticor R<= −0.75, Cor R>= 0.75') +
+    scale_color_gradientn(colors = rev(brewer.pal(3, 'YlOrRd')), limits = c(0.001, 0.05), oob = scales::squish) + scale_size_continuous(limits=c(0,1000), breaks=c(10,20,30,40,50), range = c(1,10)) +
+    theme(axis.title.y = element_blank(),legend.title = element_text(size = 12), legend.text = element_text(size = 10), axis.title.x = element_blank())
+graphics.off()
+
+## Median pearson correlation by subcellular location
+ggplot(hpa_df_for_rvp %>% filter(!Subcellular_main_location %in% c('Rods & Rings', 'Kinetochore'), 
+                                 !is.na(pearson_correlation) & !is.na(Subcellular_main_location)), 
+       aes(x = pearson_correlation, y = fct_reorder(Subcellular_main_location, pearson_correlation, .fun = median))) +
+  rasterise(geom_jitter(alpha = 0.1, shape = 16), dpi = 300) + geom_boxplot(outlier.alpha = 0, fill = 'grey') + theme(axis.title.y = element_blank()) + labs(x = 'Pearson R')
+ggsave('localization_rvp_boxplot.pdf', device = 'pdf', height = 20, width = 10, units = 'cm')
+
+## Median pearson correlation among complexes
+ggplot(Hs_complexome_CORUM_full_rvp, aes(x= rvp_rank, y = median_pearson)) + geom_point(aes(color = Source, size = Fraction_detected), shape = 16) + scale_color_manual(values = c('#31a354','#c2e699')) +
+  geom_label_repel(data = Hs_complexome_CORUM_full_rvp %>% filter(ComplexName %in% c('F1F0-ATPase, mitochondrial', 'Mitochondrial respiratory chain complex I', 'RNA polymerase II core complex', 'CTNNB1-EPCAM-FHL2-LEF1 complex', 'CCC complex', '26S Proteasome complex', 'Decapping complex')), aes(label = ComplexName), size = 3, max.overlaps = Inf, box.padding = .5, min.segment.length = .1) + theme(legend.title = element_blank(), legend.position = 'top') + labs(x = 'Rank', y = 'Median Pearson r') + ylim(-1,1)
+ggsave('rvp_discordance_among_complexes.pdf', device = 'pdf', height = 10, width = 10, units = 'cm')
+
+## Median pearson correlation among pathways
+ggplot(Hs_pathways_rvp %>% filter(Source %in% c('KEGG', 'BIOCARTA', 'WP')), aes(x= rvp_rank, y = median_pearson)) + geom_point(aes(color = Source, size = Fraction_detected), shape = 16) + scale_color_manual(values = c('#fd8d3c', '#bd0026')) +
+  geom_label_repel(data = Hs_pathways_rvp %>% filter(Name_clean %in% c('OXIDATIVE PHOSPHORYLATION', 'CITRATE CYCLE TCA CYCLE', 'STEROID BIOSYNTHESIS', 'WNT SIGNALING PATHWAY', 'AMINOACYL TRNA BIOSYNTHESIS', 'DNA REPLICATION', 'PYRUVATE METABOLISM'), Source == 'KEGG'), aes(label = Name_clean), size = 3, max.overlaps = Inf, box.padding = .5, min.segment.length = .1) + 
+  theme(legend.title = element_blank(), legend.position = 'top') + labs(x = 'Rank', y = 'Median Pearson r') + ylim(-1,1)
+ggsave('rvp_discordance_among_pathways.pdf', device = 'pdf', height = 10, width = 10, units = 'cm')
+
+## Representative discordance examples
+rvp_discordance_df_log2_transformed_long <- gather(rvp_discordance_df_log2_transformed, key = Stage, Value, -Uniprot.y, -symbol, -Description, -Ensembl.x) %>% mutate(Stage = str_replace(Stage, "_disc", ""))
+rvp_discordance_df_log2_transformed_long$Stage <- factor(rvp_discordance_df_log2_transformed_long$Stage, levels = c('Naive', 'Primed', 'Early', 'Late'))
+rvp_discordance_df_log2_transformed_long %>% head()
+ggplot(rvp_discordance_df_log2_transformed_long %>% filter(symbol %in% c('A2m', 'Sox2', 'Dnmt3b', 'Gata6')), 
+       aes(x = Stage, y= Value, group = symbol, color = symbol)) +
+  scale_color_manual(values = c('#d7191c', '#fdae61', '#abd9e9', '#2c7bb6')) +
+  geom_line() + geom_point(size = 3) + ylim(-5,5) + theme(legend.position = 'top', legend.title = element_blank()) + 
+  labs(x = 'Stage', y = 'Discordance')
+ggsave('Disc_ratio_test.pdf', device = 'pdf', height = 10, width = 10, dpi = 300, units = 'cm')
+
+## Boxplots of Discordance across timepoints in mouse samples
+ggplot(rvp_discordance_df_log2_transformed_long, aes(x= Stage, y = Value)) +
+  rasterize(geom_jitter(alpha = 0.01, size = 1, shape = 16), dpi = 300) +
+  geom_boxplot(linewidth = 0.25, outlier.alpha = 0.5, outlier.size = 1, outlier.shape = 16) +
+  geom_signif(comparisons= list(c("Naive", "Primed")), tip_length = 0.01, map_signif_level = TRUE, textsize = 3, y = 4.5, size = 1/3) +
+  geom_signif(comparisons= list(c("Early", "Primed")), tip_length = 0.01, map_signif_level = TRUE, textsize = 3, y = 5, size = 1/3) +
+  geom_signif(comparisons= list(c("Early", "Late")), tip_length = 0.01, map_signif_level = TRUE, textsize = 3, y = 5.3, size = 1/3) +
+  geom_signif(comparisons= list(c("Naive", "Early")), tip_length = 0.01, map_signif_level = TRUE, textsize = 3, y = 5.9, size = 1/3) +
+  geom_signif(comparisons= list(c("Primed", "Late")), tip_length = 0.01, map_signif_level = TRUE, textsize = 3, y = 6.6, size = 1/3) +
+  geom_signif(comparisons= list(c("Naive", "Late")), tip_length = 0.01, map_signif_level = TRUE, textsize = 3, y = 7.2, size = 1/3) +
+  theme(legend.position = 'top', legend.title = element_blank()) +
+  labs(y = 'Discordance') -> temporal_box_plot_discordance
+temporal_box_plot_discordance
+ggsave(plot = temporal_box_plot_discordance, filename = 'Disc_ratio_boxplot.pdf', device = 'pdf', height = 10, width = 10, dpi = 300, units = 'cm')
+
+## GO term enrichment for protein-discordant and RNA-discordant genes across mouse gastruloid development
+rbind(enrichGO(gene = rvp_discordance_df_log2_transformed_long %>% filter(Value <=-1, Stage == 'Naive') %>% pull(Uniprot.y), 
+               OrgDb = 'org.Mm.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = rvp_discordance_df_log2_transformed_long$Uniprot.y %>% unique(), pvalueCutoff = .05, pAdjustMethod = 'BH') %>% as.data.frame() %>% mutate(Disc = 'RNA', Stage = 'Naive') %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1])),
+      enrichGO(gene = rvp_discordance_df_log2_transformed_long %>% filter(Value <=-1, Stage == 'Primed') %>% pull(Uniprot.y), 
+               OrgDb = 'org.Mm.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = rvp_discordance_df_log2_transformed_long$Uniprot.y %>% unique(), pvalueCutoff = .05, pAdjustMethod = 'BH') %>% as.data.frame() %>% mutate(Disc = 'RNA', Stage = 'Primed') %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1])), 
+      enrichGO(gene = rvp_discordance_df_log2_transformed_long %>% filter(Value <=-1, Stage == 'Early') %>% pull(Uniprot.y), 
+               OrgDb = 'org.Mm.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = rvp_discordance_df_log2_transformed_long$Uniprot.y %>% unique(), pvalueCutoff = .05, pAdjustMethod = 'BH') %>% as.data.frame() %>% mutate(Disc = 'RNA', Stage = 'Early') %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1])), 
+      enrichGO(gene = rvp_discordance_df_log2_transformed_long %>% filter(Value <=-1, Stage == 'Late') %>% pull(Uniprot.y), 
+               OrgDb = 'org.Mm.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = rvp_discordance_df_log2_transformed_long$Uniprot.y %>% unique(), pvalueCutoff = .05, pAdjustMethod = 'BH') %>% as.data.frame() %>% mutate(Disc = 'RNA', Stage = 'Late') %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1])), 
+      enrichGO(gene = rvp_discordance_df_log2_transformed_long %>% filter(Value >=1, Stage == 'Naive') %>% pull(Uniprot.y), 
+               OrgDb = 'org.Mm.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = rvp_discordance_df_log2_transformed_long$Uniprot.y %>% unique(), pvalueCutoff = .05, pAdjustMethod = 'BH') %>% as.data.frame() %>% mutate(Disc = 'Protein', Stage = 'Naive') %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1])), 
+      enrichGO(gene = rvp_discordance_df_log2_transformed_long %>% filter(Value >=1, Stage == 'Primed') %>% pull(Uniprot.y), 
+               OrgDb = 'org.Mm.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = rvp_discordance_df_log2_transformed_long$Uniprot.y %>% unique(), pvalueCutoff = .05, pAdjustMethod = 'BH') %>% as.data.frame() %>% mutate(Disc = 'Protein', Stage = 'Primed') %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1])), 
+      enrichGO(gene = rvp_discordance_df_log2_transformed_long %>% filter(Value >=1, Stage == 'Early') %>% pull(Uniprot.y), 
+               OrgDb = 'org.Mm.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = rvp_discordance_df_log2_transformed_long$Uniprot.y %>% unique(), pvalueCutoff = .05, pAdjustMethod = 'BH') %>% as.data.frame() %>% mutate(Disc = 'Protein', Stage = 'Early') %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1])), 
+      enrichGO(gene = rvp_discordance_df_log2_transformed_long %>% filter(Value >=1, Stage == 'Late') %>% pull(Uniprot.y), 
+               OrgDb = 'org.Mm.eg.db', keyType = 'UNIPROT', ont = 'BP', universe = rvp_discordance_df_log2_transformed_long$Uniprot.y %>% unique(), pvalueCutoff = .05, pAdjustMethod = 'BH') %>% as.data.frame() %>% mutate(Disc = 'Protein', Stage = 'Late') %>% mutate(GO_term_size = as.numeric(str_split(BgRatio, "/", simplify = TRUE)[,1]))) %>% filter(GO_term_size <=150) -> Mm_timepoints_rvp_discordance_gene_sets
+
+Mm_timepoints_rvp_discordance_gene_sets %>% arrange(p.adjust) %>% mutate(Stage = factor(Stage, levels = c('Naive', 'Primed', 'Early', 'Late'))) -> Mm_timepoints_rvp_discordance_gene_sets
+Mm_timepoints_rvp_discordance_gene_sets %>% arrange(p.adjust, Disc, Stage)
+Mm_timepoints_rvp_discordance_gene_sets$Description <- factor(Mm_timepoints_rvp_discordance_gene_sets$Description, 
+                                                              levels = Mm_timepoints_rvp_discordance_gene_sets %>% arrange(Disc, Stage) %>% pull(Description))
+factor(Mm_timepoints_rvp_discordance_gene_sets$Description, levels = Mm_timepoints_rvp_discordance_gene_sets %>% arrange(Disc, Stage) %>% pull(Description))
+
+Mm_timepoints_rvp_discordance_gene_sets_reduced <- Mm_timepoints_rvp_discordance_gene_sets %>% arrange(p.adjust, Disc, Stage) %>% group_by(Disc, Stage) %>% slice(1)
+Mm_timepoints_rvp_discordance_gene_sets_reduced$Description <- factor(Mm_timepoints_rvp_discordance_gene_sets_reduced$Description, levels = Mm_timepoints_rvp_discordance_gene_sets_reduced %>% arrange(Stage, Disc) %>% pull(Description) %>% unique())
+
+## Discordance changes in protein complexes across stages mouse of gastruloid development
+Mm_complexome_rvp_discordance <- read.csv(file = '../Mm_complexome_rvp_discordance.txt', sep = '\t')
+Mm_complexome_rvp_discordance %>% gather(key = variable, value = value, 
+                                         Naive_disc_median, Primed_disc_median, Early_disc_median, Late_disc_median) %>% mutate(variable =  str_replace(variable, '_disc_median', '')) -> Mm_complexome_rvp_discordance_long
+Mm_complexome_rvp_discordance_long$variable <- factor(Mm_complexome_rvp_discordance_long$variable, levels = c("Naive", "Primed", "Early", "Late"))
+
+ggplot(Mm_complexome_rvp_discordance_long %>% filter(Detected_members >2), aes(x = log2(value), y = variable)) + xlab('Discordance') +
+  geom_density_ridges(stat = 'binline', scale = .8, size = .25, linewidth = 0.25) + geom_vline(xintercept = 0, color="black", linetype = 2, linewidth = .25) + theme(axis.title.y = element_blank(), legend.position = 'none') + xlim(-2.5, 2.5) +
+  geom_label_repel(data = Mm_complexome_rvp_discordance_long %>% filter(Recommended.name %in% c('Core mediator complex', 'Intraflagellar transport complex B', 'Mitochondrial respiratory chain complex I')), aes(label = Recommended.name), fill = 'white', min.segment.length = 0.1, box.padding = .5, max.overlaps = Inf, size = 3)
+
+##  FC plots for representative complexes
+string_de_rna_prots <- read.csv('STRING network_physical_evl_de_l2fc default node.csv', sep = ',') %>% rename(Protein_l2fc = 'log2FC', RNA_l2fc = 'log2FoldChange')
+plot_grid(plot_rvp_fc_complexes(string_de_rna_prots, 'Core mediator complex'), plot_rvp_fc_complexes(string_de_rna_prots, 'Intraflagellar transport complex B'), plot_rvp_fc_complexes(string_de_rna_prots, 'Mitochondrial respiratory chain complex I'), align = 'hv', nrow = 1)
+ggsave('evl_rvp_l2fc_line_plot.pdf', device = 'pdf', units = 'cm', width = 20, height = 8)
+
+
+```
+
+
+```{r Sup.Fig.4}
+## Hox gene heatmap
+make_temporal_heatmap_rna(merged_rna_df_log2_rtm_for_heatmap, paste(sort(hox_genes[!hox_genes %in% c('HOXC9', 'HOXD13', 'HOXA7', 'HOXC5', 'HOXC8', 'HOXB13', 'HOXA13', 'HOXC10', 'HOXA10', 'HOXC6', 'HOXA11', 'HOXA9', 'HOXD10', 'HOXC11', 'HOXA6', 'HOXD3', 'HOXD4', 'HOXD11', 'HOXD12', 'HOXC12', 'HOXC13', 'HOXD9')]), collapse = ' '), outfile = 'HOX_genes', 10,10, species = 'both', clust_rows = TRUE)
+
+## Representative RNA-protein abundance plots 
+merged_temporal_prot_rna_df_log2_rtm %>% select(-contains('rna.g'), -contains('prot.g')) %>%
+  pivot_longer(cols = -c(symbol, Uniprot, contains('_gsd')),
+               names_to = c(".value", "Type"), 
+               names_sep = "_") %>% 
+  gather(key = Stage, value = gMean, hNaiveH9, hPrimedH9, hPrimedRUES2, hEarly, hLate, mNaive, mPrimed, mEarly, mLate) %>%
+  pivot_longer(cols = -c(symbol, Uniprot, Type, Stage, gMean), names_to = c(".value", "Type2"), 
+               names_sep = "_") %>% 
+  gather(key = Stage2, value = gsd,  hNaiveH9, hPrimedH9, hPrimedRUES2, hEarly, hLate, mNaive, mPrimed, mEarly, mLate) %>% filter(Stage == Stage2, Type == Type2) %>% dplyr::select(-Type2, -Stage2) %>% dplyr::distinct() %>% filter(!is.na(gMean), !is.na(gsd))-> merged_temporal_prot_rna_df_long
+
+merged_temporal_prot_rna_df_long %>% dplyr::group_by(symbol, Uniprot, Stage, Type) %>%
+  dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+  dplyr::filter(n > 1L) -> duplicates_rvp_in_merged ## Mainly splice forms
+
+merged_temporal_prot_rna_df_long %>% filter(!(symbol %in% duplicates_rvp_in_merged$symbol)) %>% pivot_wider(names_from = Type, values_from = c(gMean, gsd), names_glue = "{Type}_{.value}") %>%
+  drop_na() -> merged_temporal_prot_rna_df_long_rvp_corr
+ggplot(merged_temporal_prot_rna_df_long_rvp_corr %>% filter(symbol %in% c('SOX2', 'NSA2')), aes(x = (r_gMean), y = (p_gMean), color = symbol)) +
+  geom_point(shape = 16, size =3) + stat_cor(aes(label = ..r.label..)) +
+  geom_errorbar(aes(ymin=(p_gMean-abs(p_gsd)), ymax=(p_gMean+abs(p_gsd))),linetype=1, width = 0.1, size = 0.4) +
+  geom_errorbarh(aes(xmin=(r_gMean-abs(r_gsd)), xmax=(r_gMean+abs(r_gsd))), linetype=1, height = 0.1, size = 0.4) +
+  labs(x = 'RNA abundance', y = 'Protein Abundance') + theme(legend.position = 'top') + xlim(-3,3) + ylim(-3,3) +
+  geom_smooth(method=lm, se = FALSE, linetype = 2, linewidth = .5)
+ggsave('rvp_representative_example_log2_rtm.pdf', device = 'pdf', units = 'cm', height = 8, width = 8)
+
+## RNA-protein correlation by gene class
+ggplot(hpa_protein_classes %>% filter(protein_class %in% c('Metabolic', 'Transporters', 'Transcription', 'Kinases', 'Ribosomal')), aes(x = pearson_correlation, y = fct_reorder(protein_class, pearson_correlation, .fun = median))) + #geom_density_ridges(stat = 'binline', bins = 20, scale = .75, linewidth = .1178) + xlim(-1,1) + labs(x = 'Pearson r') +
+  rasterise(geom_jitter(alpha = 0.1, shape = 16), dpi = 300) + geom_boxplot(outlier.alpha = 0, fill = 'grey') + theme(axis.title.y = element_blank()) + labs(x = 'Pearson r')
+ggsave('protein_class_rvp_boxplot.pdf', device = 'pdf', height = 8, width = 10, units = 'cm') 
+
+## RNA-protein scatterplot across all measured timepoints
+merged_temporal_prot_rna_df_long_rvp_corr  %>%
+  mutate(Species = ifelse(substr(Stage, 1, 1) == "h", "Human", 
+                          ifelse(substr(Stage, 1, 1) == "m", "Mouse", NA))) -> merged_temporal_prot_rna_df_long_rvp_corr
+ggplot(merged_temporal_prot_rna_df_long_rvp_corr, aes(x = r_gMean, y = p_gMean)) + 
+  rasterize(geom_point(alpha = .05), dpi = 300) + 
+  facet_wrap(~factor(Stage, levels = c('hNaiveH9' , 'hPrimedH9', 'hPrimedRUES2', 'hEarly', 'hLate',
+                                       'mNaive', 'mPrimed', 'mEarly', 'mLate'))) + labs(x = 'RNA l2fc', y = 'Protein l2fc') + 
+  stat_cor(aes(label = ..r.label..), method = 'pearson')
+
+
+## Mouse RNA-protein discordance heatmap
+rvp_discordance_df_log2_transformed <- read.csv('rvp_discordance_non_zero.txt', sep = '\t')
+rvp_discordance_df_log2_transformed %>% distinct() %>% filter(!symbol %in% c('Btf3l4', 'Hspa14', 'Taf9', 'Txnl4a')) %>% column_to_rownames(var = "symbol") %>%
+  select(contains('_disc')) %>% as.matrix() %>% pheatmap(color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(seq(-1.5, 1.5, by = 0.5))), cluster_rows = hc_disc, cluster_cols = FALSE,
+                                                         clustering_distance_rows = 'correlation', clustering_method = 'complete', breaks = seq(-2, 2, by = 0.5), show_rownames = FALSE, angle_col = 90,
+                                                         filename = 'Mm_rvp_discordance.pdf', 
+                                                         height = 4, width = 4)
+
+## Significant RNA v/s Protein fold changes in mouse protein complexes
+significant_pval <- vector()
+significant_names <- vector()
+detected_members <- vector()
+for (i in 1:nrow(Mm_complexome_rvp_discordance)){
+  complex_members <- str_split(Mm_complexome_rvp_discordance$Complex_members[i], pattern = ' ') %>% unlist()
+  #print (complex_members)
+  if (length(complex_members) > 2 & string_de_rna_prots %>% filter(Uniprot %in% complex_members) %>% nrow() > 2) {
+    pval <- t.test(string_de_rna_prots %>% filter(Uniprot %in% complex_members) %>% pull(RNA_l2fc),
+                 string_de_rna_prots %>% filter(Uniprot %in% complex_members) %>% pull(Protein_l2fc))$p.value
+    }
+  if (pval) {
+    print (pval)
+    print(Mm_complexome_rvp_discordance$Recommended.name[i])
+    significant_pval <- c(significant_pval, pval)
+    significant_names <- c(significant_names, Mm_complexome_rvp_discordance$Recommended.name[i])
+    detected_members <- c(detected_members, Mm_complexome_rvp_discordance$Detected_members[i])
+    }}
+
+significant_results <- data.frame(Recommended_name = significant_names, p_value = significant_pval, Detected_members = detected_members)
+significant_results %>% filter(p_value < 0.001, Detected_members > 2, !Recommended_name %in% c('60S cytosolic large ribosomal subunit, testis-specific variant', '60S cytosolic large ribosomal subunit, striated muscle variant')) %>% ggplot(aes(y = reorder(Recommended_name, -p_value), x = -log10(p_value))) + geom_bar(stat = 'identity') + labs(x = '-Log10(P-value)') + theme(axis.title.y = element_blank())
+ggsave('Most_significant_complex_rvp_fold_changes.pdf', device = 'pdf', units = 'cm', height = 10, width = 15)
+
+## Representative heatmap of stage-specific mouse transcription factors
+make_temporal_heatmap(Mm_ms_scaled, 'Sox2 Sox3 Tfap2c Gata6', outfile = 'mouse_TF_rep_example_for_target_transcripts', cell_height = 24, cell_width = 24, species = 'mouse', clust_rows = F)
+## Representative heatmap of TF-target pairs
+TF_prot_target_transcripts_corr_matrix %>% select(symbol, Sox2, Sox3, Tfap2c, Gata6) %>% filter(symbol %in% c('Nanog','Top2a', 'Sox17', 'Dppa3')) %>% 
+  mutate(symbol = factor(symbol, levels = c('Nanog', 'Top2a', 'Dppa3', 'Sox17'))) %>% arrange(symbol) %>%
+  column_to_rownames(var = 'symbol') %>%
+  pheatmap(cluster_cols = F, cluster_rows = F, show_rownames = T, angle_col = 90, fontsize = 12, cellwidth = 24, cellheight = 24,
+           border_color = 'black',
+           color = colorRampPalette(c('#d7191c', 'white','#2c7bb6'))(length(seq(-1, 1, by = 0.1))),
+           filename = 'TF_prot_target_transcript_correlation_heatmap.pdf', height = 10, width = 10)
+
+
+## Box_plots of Transcription factor targets
+TF_prot_target_transcripts_corr_matrix %>% filter(Gata6_target == 'Yes', Gata6 >= 0.9) %>% pull(Uniprot.y) -> Gata6_enriched_targets
+TF_prot_target_transcripts_corr_matrix %>% filter(Tfap2c_target == 'Yes', Tfap2c >= 0.9) %>% pull(Uniprot.y) -> Tfap2c_enriched_targets
+TF_prot_target_transcripts_corr_matrix %>% filter(Sox3_target == 'Yes', Sox3 >= 0.9) %>% pull(Uniprot.y) -> Sox3_enriched_targets
+TF_prot_target_transcripts_corr_matrix %>% filter(Sox2_target == 'Yes', Sox2 >= 0.9) %>% pull(Uniprot.y) -> Sox2_enriched_targets
+
+non_zero_temporal_plotting_df_log2_rtm %>% select(symbol, Uniprot.y, contains('r_gmean')) %>% 
+  mutate(Sox2_target = ifelse(Uniprot.y %in% Sox2_targets, "Yes", "No"),
+         Sox3_target = ifelse(Uniprot.y %in% Sox3_targets, "Yes", "No"),
+         Tfap2c_target = ifelse(Uniprot.y %in% Tfap2c_targets, "Yes", "No"),
+         Gata6_target = ifelse(Uniprot.y %in% Gata6_targets, "Yes", "No")) %>% 
+  mutate(Sox2_enrichment = ifelse(Uniprot.y %in% Sox2_enriched_targets, "Enrichment", "Background"),
+         Sox3_enrichment = ifelse(Uniprot.y %in% Sox3_enriched_targets, "Enrichment", "Background"),
+         Tfap2c_enrichment = ifelse(Uniprot.y %in% Tfap2c_enriched_targets, "Enrichment", "Background"),
+         Gata6_enrichment = ifelse(Uniprot.y %in% Gata6_enriched_targets, "Enrichment", "Background")) -> non_zero_temporal_plotting_df_log2_rtm_for_violin_plots
+
+### This is for the TFlink analysis
+non_zero_temporal_plotting_df_log2_rtm_for_violin_plots %>% filter(Gata6_target == 'Yes') %>% melt(variable.name = 'Stage', value.name = 'RNAlog2FC') %>% 
+  mutate(Stage = sub('_r_gmean', '', Stage), Stage = sub('^m', '', Stage)) %>%
+  ggplot(aes(x = fct_relevel(Stage, 'Naive', 'Primed', 'Early', 'Late'), y = RNAlog2FC, fill = Gata6_enrichment)) + geom_split_violin(scale = 'width') + 
+  theme(axis.title.x = element_blank(), legend.position = 'top', legend.title = element_blank()) + ylim(-5,5) +
+  stat_summary(fun.data = "mean_se", geom = "pointrange", show.legend = F, 
+               position = position_dodge(.175), size = .25, shape = 16) + 
+  scale_fill_manual(values = c('grey', 'cyan')) +
+  stat_compare_means(method = "anova", label.y = 5, size = 3, label = 'p.signif') +
+  labs(subtitle = paste0('Gata6 enriched targets = ', Gata6_enriched_targets %>% length())) -> tf_late_violin_plot
+tf_late_violin_plot
+non_zero_temporal_plotting_df_log2_rtm_for_violin_plots %>% filter(Tfap2c_target == 'Yes') %>% melt(variable.name = 'Stage', value.name = 'RNAlog2FC') %>% 
+  mutate(Stage = sub('_r_gmean', '', Stage), Stage = sub('^m', '', Stage)) %>%
+  ggplot(aes(x = fct_relevel(Stage, 'Naive', 'Primed', 'Early', 'Late'), y = RNAlog2FC, fill = Tfap2c_enrichment)) + geom_split_violin(scale = 'width') + 
+  stat_summary(fun.data = "mean_se", geom = "pointrange", show.legend = F, 
+               position = position_dodge(.175), size = .25, shape = 16) + 
+  scale_fill_manual(values = c('grey', 'cyan')) +
+  stat_compare_means(method = "anova", label.y = 5, size = 3, label = 'p.signif') +
+  theme(axis.title.x = element_blank(), legend.position = 'top', legend.title = element_blank()) + ylim(-5,5) +
+  labs(subtitle = paste0('Tfap2c enriched targets = ', Tfap2c_enriched_targets %>% length())) -> tf_early_violin_plot
+
+non_zero_temporal_plotting_df_log2_rtm_for_violin_plots %>% filter(Sox3_target == 'Yes') %>% melt(variable.name = 'Stage', value.name = 'RNAlog2FC') %>% 
+  mutate(Stage = sub('_r_gmean', '', Stage), Stage = sub('^m', '', Stage)) %>%
+  ggplot(aes(x = fct_relevel(Stage, 'Naive', 'Primed', 'Early', 'Late'), y = RNAlog2FC, fill = Sox3_enrichment)) + geom_split_violin(scale = 'width') + 
+  stat_summary(fun.data = "mean_se", geom = "pointrange", show.legend = F, 
+               position = position_dodge(.175), size = .25, shape = 16) +  
+  scale_fill_manual(values = c('grey', 'cyan')) +
+  stat_compare_means(method = "anova", label.y = 5, size = 3, label = 'p.signif') +
+  theme(axis.title.x = element_blank(), legend.position = 'top', legend.title = element_blank()) + ylim(-5,5) +
+  labs(subtitle = paste0('Sox3 enriched targets = ', Sox3_enriched_targets %>% length())) -> tf_primed_violin_plot
+tf_primed_violin_plot
+non_zero_temporal_plotting_df_log2_rtm_for_violin_plots %>% filter(Sox2_target == 'Yes') %>% melt(variable.name = 'Stage', value.name = 'RNAlog2FC') %>% 
+  mutate(Stage = sub('_r_gmean', '', Stage), Stage = sub('^m', '', Stage)) %>%
+  ggplot(aes(x = fct_relevel(Stage, 'Naive', 'Primed', 'Early', 'Late'), y = RNAlog2FC, fill = Sox2_enrichment)) + geom_split_violin(scale = 'width') + 
+  stat_summary(fun.data = "mean_se", geom = "pointrange", show.legend = F, 
+               position = position_dodge(.175), size = .25, shape = 16) +
+  scale_fill_manual(values = c('grey', 'cyan')) +
+  stat_compare_means(method = "anova", label.y = 5, size = 3, label = 'p.signif') +
+  theme(axis.title.x = element_blank(), legend.position = 'top', legend.title = element_blank()) + ylim(-5,5) +
+  labs(subtitle = paste0('Sox2 enriched targets = ', Sox2_enriched_targets %>% length())) -> tf_naive_violin_plot
+
+plot_grid(tf_naive_violin_plot, tf_primed_violin_plot, tf_early_violin_plot, tf_late_violin_plot, align = 'hv', nrow = 2)
+ggsave('TF_targets_upregulation_violinplots.pdf', height = 15, width = 15, units = 'cm', device = 'pdf', dpi = 300)
+
+## Heatmap
+TF_prot_target_transcripts_corr_matrix %>% select(symbol, Sox2, Sox3, Tfap2c, Gata6) %>% filter(symbol %in% c('Nanog','Top2a', 'Sox17', 'Dppa3')) %>% 
+  mutate(symbol = factor(symbol, levels = c('Nanog', 'Top2a', 'Dppa3', 'Sox17'))) %>% arrange(symbol) %>%
+  column_to_rownames(var = 'symbol') %>%
+  pheatmap(cluster_cols = F, cluster_rows = F, show_rownames = T, angle_col = 90, fontsize = 12, cellwidth = 24, cellheight = 24,
+           border_color = 'black',
+           color = colorRampPalette(c('#d7191c', 'white','#2c7bb6'))(length(seq(-1, 1, by = 0.1))),
+           filename = 'TF_prot_target_transcript_correlation_heatmap.pdf', height = 10, width = 10)
+
+```
+

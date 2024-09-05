@@ -1,0 +1,816 @@
+---
+title: "Fig3_SupFig3"
+output: html_document
+date: "2024-09-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(ggrastr)
+library(cowplot)
+library(RColorBrewer)
+library(ggplot2)
+library(ggridges)
+library(ggpmisc)
+library(GGally)
+library(psych)
+library(ggpubr)
+library(reshape2)
+library(cowplot)
+library(umap)
+library(EnvStats)
+library(metR)
+library(pheatmap)
+library(scales)
+library(dendsort)
+library(amap)
+library(Matrix)
+library(igraph)
+theme_set(theme_cowplot(rel_small = 10/12) + theme(axis.line = element_line(size = unit(0.1178, "pt")), axis.ticks = element_line(size = unit(0.1178, "pt")), panel.background = element_rect(fill = NA, colour = NA)))
+
+```
+
+
+```{r Functions}
+plot_protein_pairs_scatter <- function(transposed_df, pair) {
+  pair <- str_split(pair, pattern = ' ') %>% unlist()
+  print(pair)
+  ggplot(transposed_df %>% select(all_of(pair)), aes_q(x = as.name(pair[1]), y = as.name(pair[2]))) + geom_point() + stat_cor(method = 'pearson', aes(label= ..r.label..)) + 
+    theme(legend.position = 'top')}
+
+permute_and_plot_dist <- function(prot_pair_list, nsim = 1000, cor_method = 'pearson', df) {
+  final_permuted_distributions <- list()
+  for (i in 1:length(prot_pair_list)) {
+    permutation_distribution <- permute_sampleIDs_pairwise_prot_correlation(gene1 = prot_pair_list[[i]][1], gene2 = prot_pair_list[[i]][2], nsim = nsim, annotation = 'protein', plot = 'no', cor_method = cor_method, df = df)
+    final_permuted_distributions <- c(final_permuted_distributions, permutation_distribution) %>% unlist()
+  }
+  res_df <- data.frame(correlation = final_permuted_distributions)
+  #print(res_df)
+  perm_plot <- ggplot(res_df, aes(x = correlation)) + geom_histogram(bins = 100, fill = 'grey75') + labs(subtitle = paste0('Histogram of permutations between ', length(prot_pair_list), ' pairs (', nsim, ' permutations)'), x = 'Pearson R', y = 'Frequency') + xlim(-1,1)
+  return(c(perm_plot, res_df))
+}
+
+permute_sampleIDs_pairwise_prot_correlation <- function(gene1, gene2, nsim = 10000, annotation = 'gene', plot = 'yes', cor_method = 'pearson', df){
+  if (annotation == 'gene') {
+    prot1 <- Hs_uniprot_gene_annotations %>% filter(Gene.Symbol == gene1) %>% pull(Entry)
+    prot2 <- Hs_uniprot_gene_annotations %>% filter(Gene.Symbol == gene2) %>% pull(Entry)
+  } else if (annotation == 'protein') {
+    prot1 = gene1
+    prot2 = gene2
+    }
+  cat(gene1, prot1, sep = ' ')
+  cat(gene2, prot2, sep = ' ')
+  test_case_example <- df %>% select(Sample, {{prot1}}, {{prot2}}) %>% melt()
+  #print(test_case_example %>% colnames())
+  res <- numeric(nsim) ## set aside space for results
+  for (i in 1:nsim) {
+    ## standard approach: scramble response value
+    perm <- sample(nrow(test_case_example), replace = FALSE)
+    bdat <- transform(test_case_example,value=value[perm])
+    ## compute & store difference in means; store the value
+    res[i] <- cor.test(bdat$value[bdat$variable==prot1], bdat$value[bdat$variable==prot2])$estimate}
+  obs <- cor.test(test_case_example$value[test_case_example$variable==prot1], test_case_example$value[test_case_example$variable==prot2], cor_method = 'pearson')$estimate
+  #res <- c(res,obs)
+  print(median(res))
+  res_df <- data.frame(correlation = res)
+  ggplot(res_df, aes(x = correlation)) + geom_histogram(bins = 100, fill = 'grey75') +
+    geom_vline(aes(xintercept = obs), color = 'blue', linetype = 'dashed', size = 1, linewidth = 1) +
+    draw_text(text = round(obs, digits = 4), x = obs, y = 500, vjust = 1.25, hjust = -0.25, size = 10) +
+    xlim(-1,1) +
+    labs(subtitle = paste0('Histogram of SampleID permutations between ', gene1, ' & ', gene2, ' (', nsim, ' permutations)'), x = 'Pearson R', y = 'Frequency') -> perm_hist_plot
+  if (plot == 'yes'){
+    return(perm_hist_plot)
+    }else {return(res)}
+  }
+
+make_corr_titration_df <- function(annotation_DB, cor_type = 'abs',
+                                   iterator_list = c(seq(from = 0, to = 0.9, by = 0.1), 
+                                                     seq(from = 0.9, to = 0.99, by = 0.01),
+                                                     seq(from = 0.99, to = 1, by = 0.001))) {
+  pearson_results_list <- vector()
+  edges_list <- vector()
+  for (cutoff in iterator_list) {
+  print(cutoff)
+    calculate_fraction_explained(node_list = proteins_in_corr_network_no_isoforms, cor_matrix= non_zero_merged_ms_df_3_shared_timepoint_log2_rtm_pearson_corr_matrix, db_annotation_matrix = annotation_DB, r_cutoff = cutoff, type = cor_type) -> result
+    print (paste0('result is ',result)) 
+    pearson_results_list <- c(pearson_results_list, result)
+    calculate_fraction_explained(node_list = proteins_in_corr_network_no_isoforms, cor_matrix= non_zero_merged_ms_df_3_shared_timepoint_log2_rtm_pearson_corr_matrix, db_annotation_matrix = annotation_DB, r_cutoff = cutoff, type = cor_type, edge_count_only = 'yes') -> edge_result
+    print (paste0('edges= ',edge_result)) 
+    edges_list <- c(edges_list, edge_result)
+    }
+  print(pearson_results_list)
+  results_df <- data.frame(R_threshold = as.numeric(iterator_list), 
+                           Fraction = as.numeric(pearson_results_list),
+                           Observed_edges = as.numeric(edges_list))
+  print(results_df)
+  background_fraction_explained <- (annotation_DB[lower.tri(annotation_DB, diag = F)] %>% .[.!=0] %>% length())/(annotation_DB[lower.tri(annotation_DB, diag = F)] %>% length())
+  print(background_fraction_explained)
+  return(results_df)}
+
+make_corr_titration_plot <- function(annotation_DB, results_df, type = 'abs') {
+  if (type == 'non_abs') {
+    xaxis_label = 'Pearson R'} else{
+      xaxis_label = 'abs(Pearson R)'}
+  annotation_DB[proteins_in_corr_network_no_isoforms, proteins_in_corr_network_no_isoforms] -> annotation_DB
+  background_fraction_explained <- (annotation_DB[lower.tri(annotation_DB, diag = F)] %>% .[.!=0] %>% length())/(annotation_DB[lower.tri(annotation_DB, diag = F)] %>% length())
+  print(background_fraction_explained)
+  ggplot(results_df, aes(x=as.numeric(R_threshold), y = as.numeric(Fraction))) + 
+    geom_point() + labs(x = xaxis_label, y = 'Fraction explained', subtitle = 'fraction explained per R threshold') + 
+    geom_hline(yintercept = background_fraction_explained, linetype = 2) -> plot
+  return(plot)}
+
+### Creating pairwise matrices across DBs
+create_pairwise_matrix <- function(df) {
+  # Step 1: Extract all unique Uniprot IDs
+  all_uniprot_ids <- unique(unlist(strsplit(paste(df$Members_clean, collapse = " "), " ")))
+  # Step 2: Create a binary incidence matrix
+  n <- length(all_uniprot_ids)
+  m <- nrow(df)
+  incidence_matrix <- Matrix(0, nrow = m, ncol = n, sparse = TRUE)
+  # Create a mapping from Uniprot ID to index
+  uniprot_id_to_index <- setNames(seq_along(all_uniprot_ids), all_uniprot_ids)
+  # Fill the incidence matrix
+  for (i in seq_len(m)) {
+    members_str <- df$Members_clean[i]
+    members <- strsplit(members_str, " ")[[1]]
+    indices <- uniprot_id_to_index[members]
+    incidence_matrix[i, indices] <- 1
+    cat('Completed ', i, ' of ', m, '\n')
+  }
+  # Step 3: Compute the pairwise matrix using matrix multiplication
+  pairwise_matrix <- t(incidence_matrix) %*% incidence_matrix
+  # Convert to binary (0/1) and set the diagonal to 1
+  pairwise_matrix <- as(pairwise_matrix > 0, "dgCMatrix")
+  diag(pairwise_matrix) <- 1
+  # Assign row and column names
+  rownames(pairwise_matrix) <- colnames(pairwise_matrix) <- all_uniprot_ids
+  pairwise_matrix <- pairwise_matrix[intersect(Hs_uniprot_gene_annotations$Entry, rownames(pairwise_matrix)), intersect(Hs_uniprot_gene_annotations$Entry, colnames(pairwise_matrix))]
+  return(pairwise_matrix)
+}
+
+### Function to expand the matrices created to be be able to use across matrix operations
+make_pairwise_proteome_matrix <- function(src_matrix, edge_stats = 'yes', Source, reduced_nodes = 'no', reduced_node_list){
+  Hs_uniprot_gene_annotations %>% pull(Entry) -> uniprot_ids
+  reduced_node_list <- unique(reduced_node_list)
+  dim_small <- nrow(src_matrix)
+  dim_big <- length(uniprot_ids)
+  int_mat <- rbind(src_matrix, 
+                   matrix(0, dim_big - dim_small, dim_small))
+  final_mat <- cbind(int_mat, 
+                     matrix(0, dim_big, dim_big - dim_small))
+  rownames(final_mat) <- colnames(final_mat) <- c(rownames(src_matrix),
+                                                  uniprot_ids[!uniprot_ids %in% rownames(src_matrix)])
+  print(dim_big)
+  print(dim_small)
+  if (reduced_nodes == 'yes'){
+    print(length(reduced_node_list))
+    final_mat <- final_mat[reduced_node_list, reduced_node_list]
+  } else {
+    final_mat <- final_mat[uniprot_ids, uniprot_ids]
+      }
+  diag(final_mat) <- 1
+  if (edge_stats == 'yes'){
+    final_mat_lower_triangle <- final_mat[lower.tri(final_mat, diag = F)]
+    #lower_tri_indices <- which(row(final_mat) > col(final_mat), arr.ind = TRUE)
+    #final_mat_lower_triangle <- final_mat[lower_tri_indices]
+    print('test')
+    cat(sum(final_mat_lower_triangle == 1), ' num_edges\n')
+    cat(length(final_mat_lower_triangle), ' total_edges\n')
+    cat(length(final_mat_lower_triangle) - sum(final_mat_lower_triangle == 1), ' remaining_edges\n')
+    final_df <- data.frame(Edge_count = setNames(c(sum(final_mat_lower_triangle == 1)), nm = c(Source)))
+    return(final_df)} else if (edge_stats == 'no'){
+      return(final_mat)}
+  }
+
+calculate_fraction_explained <- function(node_list = NULL, cor_matrix, db_annotation_matrix, r_cutoff = 0.9, type = 'abs', edge_count_only = 'no') {
+  ## Filter the matrix
+  filtered_cor_matrix <- cor_matrix[node_list, node_list]
+  db_annotation_matrix <- db_annotation_matrix[node_list, node_list]
+  print (identical(rownames(filtered_cor_matrix), rownames(db_annotation_matrix)))
+  if (type == 'abs') {
+    print(type)
+    edges_in_observed_network <- filtered_cor_matrix %>% .[lower.tri(., diag = F)] %>% .[abs(.)>= r_cutoff] %>% length()
+    print(paste0('Edges in observed network = ',edges_in_observed_network))
+    filtered_cor_matrix[abs(filtered_cor_matrix) >= r_cutoff] <- 1
+    filtered_cor_matrix[abs(filtered_cor_matrix) < r_cutoff] <- 0
+    ## Multiply filtered_cor_matrix * db_annotation_matrix
+    filtered_cor_matrix * db_annotation_matrix -> prod_matrix
+    ## Number explained edges
+    edges_explained_in_observed_network <- prod_matrix[lower.tri(prod_matrix, diag = F)] %>% .[.!= 0] %>% length()
+    print(paste0('Edges explained in observed network = ',edges_explained_in_observed_network))
+  } else if (type == 'non_abs' & r_cutoff > 0){
+    print(type)
+    edges_in_observed_network <- filtered_cor_matrix %>% .[lower.tri(., diag = F)] %>% .[.>= r_cutoff] %>% length()
+    print(paste0('Edges in observed network = ',edges_in_observed_network))
+    filtered_cor_matrix[(filtered_cor_matrix) >= r_cutoff] <- 1
+    filtered_cor_matrix[(filtered_cor_matrix) < r_cutoff] <- 0
+    filtered_cor_matrix * db_annotation_matrix -> prod_matrix
+    edges_explained_in_observed_network <- prod_matrix[lower.tri(prod_matrix, diag = F)] %>% .[.!=0] %>% length()
+    print(paste0('Edges explained in observed network = ',edges_explained_in_observed_network))
+  } else if (type == 'non_abs' & r_cutoff < 0){
+    print(type)
+    edges_in_observed_network <- filtered_cor_matrix %>% .[lower.tri(., diag = F)] %>% .[.<= r_cutoff] %>% length()
+    print(paste0('Edges in observed network = ',edges_in_observed_network))
+    filtered_cor_matrix[(filtered_cor_matrix) <= r_cutoff] <- -1
+    filtered_cor_matrix[(filtered_cor_matrix) > r_cutoff] <- 0
+    filtered_cor_matrix * db_annotation_matrix -> prod_matrix
+    edges_explained_in_observed_network <- prod_matrix[lower.tri(prod_matrix, diag = F)] %>% .[.!= 0] %>% length()
+    print(paste0('Edges explained in observed network = ',edges_explained_in_observed_network))
+    }
+  if (r_cutoff == 0){
+    print('Zero')
+    return(NA)
+  } 
+  edges_annotated_in_network <- db_annotation_matrix[lower.tri(db_annotation_matrix, diag = F)] %>% .[.!= 0] %>% length()
+  print(paste0('Edges explained in annotated network = ', edges_annotated_in_network))
+  total_edges_in_observed_network <- db_annotation_matrix[lower.tri(db_annotation_matrix, diag = F)] %>% length()
+  print(paste0('Total edges in annotated network = ', total_edges_in_observed_network))
+  if (edge_count_only == 'yes'){
+    cat(edges_explained_in_observed_network, ' ', 'edges_explained\n')
+    return(edges_in_observed_network)}
+      else if (edge_count_only == 'no'){
+      fraction_explained <- edges_explained_in_observed_network/edges_in_observed_network
+      #print(edges_explained_in_observed_network * fraction_explained)
+      return(fraction_explained)}
+}
+
+createProteinGraph <- function(gene_name, num_interactors = 25, type = 'corr') {
+  library(igraph)
+  # Filter interactions involving the specified protein
+  protein <- (Hs_uniprot_gene_annotations %>% filter(Gene.Symbol == gene_name) %>%.$Entry %>% unlist())[1]
+  protein_interactors <- pairwise_prot_corr_3_shared_timepoints_filtered %>% ## This is a prerequisite 
+    filter(Uniprot1 == protein | Uniprot2 == protein)
+  if (type == 'corr') {
+    protein_interactors %>% filter(Pearson_R >= 0.95) %>% arrange(-Pearson_R) %>% distinct() -> protein_interactors}
+  if (type == 'anticorr') {
+    protein_interactors %>% filter(Pearson_R <= -0.95) %>% arrange(Pearson_R) %>% distinct() -> protein_interactors}
+  protein_interactors_list <- c(protein_interactors$Uniprot1, protein_interactors$Uniprot2) %>% unlist() %>% unique()
+  print(length(protein_interactors_list))
+  protein_interactors_list <- protein_interactors_list[protein_interactors_list != protein] %>% unique() %>% head(num_interactors)
+  ### Now need to filter the protein_interactors_list
+  protein_interactors %>% filter((Uniprot1 == protein & Uniprot2 %in% protein_interactors_list)|(Uniprot2 == protein & Uniprot1 %in% protein_interactors_list)) -> protein_interactors
+  print(protein_interactors)
+  pairwise_prot_corr_3_shared_timepoints_filtered %>% filter((Uniprot1 %in% protein_interactors_list & Uniprot2 %in% protein_interactors_list)) -> protein_other_interactors
+  protein_interactors <- rbind(protein_interactors, protein_other_interactors)
+  # Join with the ms_raw_df to get gene symbols
+  protein_interactors <- protein_interactors %>%
+    left_join(Hs_uniprot_gene_annotations %>% select(Entry, Gene.Symbol), by = c('Uniprot1' = 'Entry')) %>%
+    rename(Gene.Symbol1 = 'Gene.Symbol') %>%
+    left_join(Hs_uniprot_gene_annotations %>% select(Entry, Gene.Symbol), by = c('Uniprot2' = 'Entry')) %>%
+    rename(Gene.Symbol2 = 'Gene.Symbol') %>%
+    select(Gene.Symbol1, Gene.Symbol2, Pearson_R, pval, qval, Uniprot1, Uniprot2) %>%
+    mutate(negLogqval = -log10(qval))
+  #print(protein_interactors)
+  #print(c(protein_interactors$Uniprot1, protein_interactors$Uniprot2) %>% unique() %>% length())
+  # Create a graph
+  protein_graph <- graph_from_data_frame(protein_interactors, directed = FALSE)
+  # Get unique gene symbols
+  protein_symbols <- unique(c(protein_interactors$Uniprot1, protein_interactors$Uniprot2))
+  vertex_size <- ifelse(protein_symbols %in% c(protein), 35, 10)
+  vertex_label_distances <- ifelse(protein_symbols %in% c(protein), 0, 2.5)
+  # Specify vertex colors
+  vertex_colors <- ifelse(protein_symbols %in% c(protein), "#fdae61", "#4575b4")
+  edge_colors <- ifelse(protein_interactors$Pearson_R >0 , "#4575b4", "#d73027")
+  perception <- ifelse(protein_symbols %in% c(protein), .5, .1)
+  radian.rescale <- function(x, start=0, direction=1) {
+    c.rotate <- function(x) (x + start) %% (2 * pi) * direction
+    c.rotate(scales::rescale(x, c(0, 2 * pi), range(x)))}
+  lab.locs <- radian.rescale(x=1:length(protein_symbols[protein_symbols != protein]), direction=-1, start=0)
+  #set.seed(123)
+  # Plot the graph
+  plot(
+    protein_graph,
+    layout = layout_with_graphopt(graph = protein_graph, spring.length = 0),
+    #layout = (layout_as_star(graph = protein_graph, center = gene_name, order = unique(protein_interactors$Gene.Symbol))) * perception,
+    vertex.label.cex = 10/12, vertex.label.color = 'black',
+    vertex.frame.width = 1/3, vertex.label.family="Helvetica",
+    vertex.size = vertex_size, 
+    vertex.label.dist = vertex_label_distances,
+    edge.color = edge_colors,
+    edge.width = 2/3,
+    label.bg = 'white',
+    vertex.label.color = 'black',
+    vertex.size = protein_interactors$Pearson_R * 20,
+    vertex.color = vertex_colors
+    #vertex.label.degree = lab.locs
+  )
+return(protein_graph)}
+
+createCooperativeProtein_graph <- function(prot_complex, source, num_cooperative_prots, anticorrelated_edges = 'Yes', comp_or_path, show_isoforms = 'Yes', Disease_db = DevDisDatabase_gencc_disease_collapsed, r_cutoff = 0.95){
+  library(igraph)
+  if (comp_or_path == 'complex') {
+    ## These are the protein complex members
+    Hs_complexome_CORUM %>% filter(ComplexName == prot_complex, Source == source) %>% distinct() %>% .$Members_clean %>% str_split(pattern = ' ') %>% unlist() -> prot_complex_members 
+    #frac_detected <- Hs_complexome_CORUM %>% filter(ComplexName == prot_complex) %>% mutate(Fraction_detected = Detected_members/Total_members) %>% .$Fraction_detected %>% unlist()
+    #frac_detected <- round(frac_detected *100, 2)
+    ## Filter complex edges qval < 0.01
+    pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(abs(Pearson_R) >= r_cutoff, qval < 0.01) %>% 
+      filter(Uniprot1 %in% prot_complex_members & Uniprot2 %in% prot_complex_members) %>% mutate(Type = 'Known') %>% distinct() -> prot_complex_network_df
+    }
+   if (comp_or_path == 'pathway'){
+     ## These are the protein complex members
+     Hs_pathways %>% filter(Name == prot_complex, Source == source) %>% distinct() %>% .$Members_clean %>%str_split(pattern = ' ') %>% unlist() -> prot_complex_members 
+     #frac_detected <- Hs_pathways %>% filter(Name == prot_complex) %>% mutate(Fraction_detected = Detected_members/Total_members) %>% .$Fraction_detected %>% unlist()
+     #frac_detected <- round(frac_detected *100, 2)
+     pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(qval < 0.01, abs(Pearson_R) >= r_cutoff) %>%
+       filter(Uniprot1 %in% prot_complex_members & Uniprot2 %in% prot_complex_members) %>% mutate(Type = 'Known')%>% distinct() -> prot_complex_network_df
+   }
+  if (comp_or_path == 'disease'){
+    Disease_db %>% filter(disease.name == prot_complex, Source == source) %>% distinct() %>% .$Members_clean %>%str_split(pattern = ' ') %>% unlist() -> prot_complex_members
+    pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(qval < 0.01, abs(Pearson_R) >= r_cutoff) %>%
+       filter(Uniprot1 %in% prot_complex_members & Uniprot2 %in% prot_complex_members) %>% mutate(Type = 'Known')%>% distinct() -> prot_complex_network_df
+    }
+  if (anticorrelated_edges == 'No') {
+    prot_complex_network_df  <- prot_complex_network_df %>% filter(Pearson_R > 0)}
+  if (show_isoforms == 'No') {
+    prot_complex_network_df <- prot_complex_network_df %>% filter(Uniprot1 %in% proteins_in_corr_network_no_isoforms & Uniprot2 %in% proteins_in_corr_network_no_isoforms)}
+  ## This is the protein complex
+  ## Filter the new_interactors by complex
+  if (num_cooperative_prots !=0) {
+    if (comp_or_path == 'complex') {
+      complex_new_interactors <- new_interactors_df_3_shared_timepoints %>% filter(ComplexName == prot_complex) %>% mutate(neglog_fes_padj = -log10(fes_padj)) %>% arrange(-neglog_fes_padj) %>% head(num_cooperative_prots)
+      pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+        filter((Uniprot1 %in% prot_complex_members & Uniprot2 %in% complex_new_interactors$new_interactor) | (Uniprot2 %in% prot_complex_members & Uniprot1 %in% complex_new_interactors$new_interactor)) %>% 
+        mutate(Type = 'New') %>% filter(Pearson_R >= r_cutoff)  %>% select(-Uniprot1_full, -Uniprot2_full) -> new_interactor_network_df
+      }
+    if (comp_or_path == 'pathway'){
+      if (prot_complex %in% unique(Oxphos_new_interactors$Name)) {
+        print('In OxPhos')
+        pathways_new_interactors <- Oxphos_new_interactors %>% filter(Name == prot_complex) %>% mutate(neglog_fes_padj = -log10(fes_padj)) %>% arrange(-neglog_fes_padj) %>% head(num_cooperative_prots)
+      pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+        filter((Uniprot1 %in% prot_complex_members & Uniprot2 %in% pathways_new_interactors$new_interactor) | (Uniprot2 %in% prot_complex_members & Uniprot1 %in% pathways_new_interactors$new_interactor)) %>%
+        mutate(Type = 'New') %>% filter(Pearson_R > r_cutoff) %>% select(-Uniprot1_full, -Uniprot2_full)-> new_interactor_network_df
+      print(pathways_new_interactors)
+      } else {
+        pathways_new_interactors <- pathway_new_interactors_3_shared_timepoints %>% filter(Name == prot_complex) %>% mutate(neglog_fes_padj = -log10(fes_padj)) %>% arrange(-neglog_fes_padj) %>% head(num_cooperative_prots)
+      pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+        filter((Uniprot1 %in% prot_complex_members & Uniprot2 %in% pathways_new_interactors$new_interactor) | (Uniprot2 %in% prot_complex_members & Uniprot1 %in% pathways_new_interactors$new_interactor)) %>%
+        mutate(Type = 'New') %>% filter(Pearson_R > r_cutoff) %>% select(-Uniprot1_full, -Uniprot2_full)-> new_interactor_network_df
+      print(pathways_new_interactors)
+          }
+    }
+    if (new_interactor_network_df %>% nrow() != 0) {
+      ## Do this to get edge stats
+    if (new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>% nrow() != 0 & new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>% nrow() != 0){
+     full_join(new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>%
+                 group_by(Uniprot1) %>% summarise(count_Uniprot1 = n()) %>% mutate_all(~ifelse(is.na(.), 0, .)) %>% ungroup(), 
+               new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>%
+                 group_by(Uniprot2) %>% summarise(count_Uniprot2 = n()) %>% mutate_all(~ifelse(is.na(.), 0, .)) %>% ungroup(), 
+               by = c('Uniprot1' = 'Uniprot2')) %>% mutate(count = count_Uniprot1 + count_Uniprot2)  %>% select(Uniprot1, count) %>% 
+      arrange(-count) -> new_interactor_edge_stats
+    } else if (new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>% nrow() == 0 & new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>% nrow() != 0){
+      new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>%
+        group_by(Uniprot2) %>% summarise(count_Uniprot2 = n()) %>% mutate_all(~ifelse(is.na(.), 0, .)) %>% ungroup() %>% mutate(count = count_Uniprot2) %>% arrange(-count) -> new_interactor_edge_stats
+    } else if (new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>% nrow() != 0 & new_interactor_network_df %>% filter(!Uniprot2 %in% prot_complex_members) %>% nrow() == 0){
+      new_interactor_network_df %>% filter(!Uniprot1 %in% prot_complex_members) %>%
+        group_by(Uniprot1) %>% summarise(count_Uniprot1 = n()) %>% mutate_all(~ifelse(is.na(.), 0, .)) %>% ungroup() %>% mutate(count = count_Uniprot1) %>% arrange(-count) -> new_interactor_edge_stats
+    }
+    new_interactor_network_df %>% 
+    filter((Uniprot1 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots] & Uniprot2 %in% prot_complex_members) | (Uniprot2 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots] & Uniprot1 %in% prot_complex_members)) %>% select(-Uniprot1_join, -Uniprot2_join, Uniprot1, Uniprot2, Pearson_R, pval, qval) -> new_interactor_network_df
+    if (comp_or_path == 'complex'){
+      remaining_interactor_network_df <- pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+      filter(Uniprot1 %in% complex_new_interactors$new_interactor & Uniprot2 %in% complex_new_interactors$new_interactor) %>% 
+      filter(Uniprot1 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots] & Uniprot2 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots]) %>%
+      mutate(Type = 'New') %>% filter(Pearson_R >=r_cutoff) %>% select(-Uniprot1_join, -Uniprot2_join, -Uniprot1_full, -Uniprot2_full)
+      }
+    if (comp_or_path == 'pathway'){
+      remaining_interactor_network_df <- pairwise_prot_corr_3_shared_timepoints_filtered %>% 
+      filter(Uniprot1 %in% pathways_new_interactors$new_interactor & Uniprot2 %in% pathways_new_interactors$new_interactor) %>% 
+      filter(Uniprot1 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots] & Uniprot2 %in% new_interactor_edge_stats$Uniprot1[1:num_cooperative_prots]) %>%
+      mutate(Type = 'New') %>% filter(Pearson_R >=r_cutoff) %>% select(-Uniprot1_join, -Uniprot2_join, -Uniprot1_full, -Uniprot2_full)
+      }
+    } else{print('no cooperative proteins found, making cooperative proteins = 0 for graph plotting')
+      num_cooperative_prots = 0}
+    
+    #print(prot_complex_network_df %>% colnames())
+    #print(new_interactor_network_df %>% colnames())
+    #print(remaining_interactor_network_df %>% colnames())
+    if (num_cooperative_prots !=0) {
+      prot_complex_network_df <- prot_complex_network_df %>% select(Pearson_R, pval, qval, Uniprot1, Uniprot2, Type)
+      #print(colnames(prot_complex_network_df))
+      #print(colnames(new_interactor_network_df))
+      #print(colnames(remaining_interactor_network_df))
+      rbind(prot_complex_network_df, new_interactor_network_df, remaining_interactor_network_df) %>%
+      mutate(abs_pearson =  abs(Pearson_R)) -> toy_network_df} 
+    }
+  if (num_cooperative_prots == 0) {
+    prot_complex_network_df %>% mutate(abs_pearson =  abs(Pearson_R)) -> toy_network_df}
+  ## This is the network but with uniprot IDs
+  ## This is the network to make the graph from
+  toy_network_df <- left_join(toy_network_df, Hs_uniprot_gene_annotations %>% select(Entry, Gene.Symbol), by = c('Uniprot1' = 'Entry')) %>% 
+    rename(Gene.Symbol1 = 'Gene.Symbol') %>% 
+    left_join(Hs_uniprot_gene_annotations %>% select(Entry, Gene.Symbol), by = c('Uniprot2' = 'Entry')) %>% rename(Gene.Symbol2 = 'Gene.Symbol') %>% 
+    select(Gene.Symbol1, Gene.Symbol2, Pearson_R, abs_pearson, pval, qval, Type, Uniprot1, Uniprot2, Type) %>% arrange(Type, Gene.Symbol1, Gene.Symbol2, Pearson_R)
+  known_vertices <- c(toy_network_df %>% filter(Uniprot1 %in% prot_complex_members) %>% .$Gene.Symbol1, 
+                      toy_network_df %>% filter(Uniprot2 %in% prot_complex_members) %>% .$Gene.Symbol2) %>% unlist() %>% unique() %>% sort()
+  new_vertices <- c(toy_network_df %>% filter(Type == 'New') %>% filter(!Uniprot1 %in% prot_complex_members) %>% .$Gene.Symbol1, 
+                    toy_network_df %>% filter(Type == 'New') %>% filter(!Uniprot2 %in% prot_complex_members) %>% .$Gene.Symbol2) %>% unlist() %>% unique() #%>% sort()
+  #view(new_interactor_network_df)
+  if (comp_or_path == 'complex' & num_cooperative_prots !=0) {
+    new_vertices <- new_vertices[match(complex_new_interactors$Gene.Symbol, new_vertices)] %>% unique() %>% .[!is.na(.)]
+    print(new_vertices)}
+  if (comp_or_path == 'pathway' & num_cooperative_prots !=0) {
+    new_vertices <- new_vertices[match(pathways_new_interactors$Gene.Symbol, new_vertices)] %>% unique() %>% .[!is.na(.)]}
+  ordered_vertices <- c(known_vertices, new_vertices)
+  print(ordered_vertices)
+  if (anticorrelated_edges == 'No') {toy_network_df%>% filter(Pearson_R >0) -> toy_network_df}
+  ## Make igraph
+  library(igraph)
+  graph_from_data_frame(toy_network_df, directed = FALSE, vertices = ordered_vertices) -> graph_test
+  E(graph_test)$width <- toy_network_df$abs_pearson
+  radian.rescale <- function(x, start=0, direction=1) {
+    c.rotate <- function(x) (x + start) %% (2 * pi) * direction
+    c.rotate(scales::rescale(x, c(0, 2 * pi), range(x)))}
+  V(graph_test)$color <- ifelse(ordered_vertices %in% known_vertices, "#ec008c", "#fdae61") #f15a29
+  if (comp_or_path == 'complex' & num_cooperative_prots !=0){
+    node_size <- c(setNames(nm = known_vertices, rep(1, length(known_vertices))), setNames(complex_new_interactors$neglog_fes_padj, new_vertices) * 0.25)
+  } else if (comp_or_path == 'complex' & num_cooperative_prots ==0 ){
+      node_size <- setNames(nm = known_vertices, rep(1, length(known_vertices)))}
+  if (comp_or_path == 'pathway' & num_cooperative_prots !=0){
+    node_size <- c(setNames(nm = known_vertices, rep(1, length(known_vertices))), setNames(pathways_new_interactors$neglog_fes_padj, new_vertices) * 0.25)
+  } else if (comp_or_path == 'pathway' & num_cooperative_prots == 0) {
+     node_size <- setNames(nm = known_vertices, rep(1, length(known_vertices)))}
+  if (comp_or_path == 'disease' & num_cooperative_prots !=0){
+    node_size <- c(setNames(nm = known_vertices, rep(1, length(known_vertices))), setNames(complex_new_interactors$neglog_fes_padj, new_vertices) * 0.25)
+  } else if (comp_or_path == 'disease' & num_cooperative_prots ==0 ){
+      node_size <- setNames(nm = known_vertices, rep(1, length(known_vertices)))}
+  print(node_size %>% cat)
+  E(graph_test)$color <- ifelse(toy_network_df$Type == 'New', '#fdae61',
+                             ifelse(toy_network_df$Pearson > 0, '#4575b4', '#d73027'))
+  lab.locs <- radian.rescale(x=1:length(ordered_vertices), direction=-1, start=0)
+  #print(lab.locs)
+  print('making graph')
+  plot(graph_test, layout = layout_in_circle(graph = graph_test), 
+     vertex.label.cex = 10/12, vertex.label.dist = 2.5, vertex.label.color = 'black', vertex.label.degree = lab.locs, vertex.size = node_size * 10,
+     vertex.frame.width = 1/3, vertex.label.family="Helvetica",
+     edge.width = 2/3, main=paste(prot_complex))
+  return(graph_test)
+  #return(node_size)
+  }
+
+save_network_plot <- function(prot_complex, w = 6, h = 6, source, anticorrelated_edges, num_cooperative_prots = 0, comp_or_path) {
+  prot_complex_filename = gsub("/", "_", prot_complex)
+  pdf(paste0(prot_complex_filename,'.pdf'), width = w, height = h, family = 'Helvetica', paper = 'letter')
+  createCooperativeProtein_graph(prot_complex = prot_complex, source = source, num_cooperative_prots = num_cooperative_prots, anticorrelated_edges = anticorrelated_edges, comp_or_path = comp_or_path)
+  dev.off()
+}
+
+extract_complex_family <- function(ComplexName) {
+  gsub(",.*?variant", "", ComplexName)
+}
+```
+
+
+```{r Fig.3}
+## Representative examples of pairwise protein correlation
+plot_protein_pairs_scatter(non_zero_merged_ms_df_3_shared_timepoint_log2_rtm_transposed, 'P23258 Q9BSJ2-4') 
+plot_protein_pairs_scatter(non_zero_merged_ms_df_3_shared_timepoint_log2_rtm_transposed, 'P23258 P05023')
+
+## Real and permuted distribution
+
+permute_and_plot_dist(prot_pair_list = pairs, nsim = 10, cor_method = 'pearson', df = toy_df) -> pairs_50k_perms_10
+rbind(subsampled_obs_dist, pairs_50k_perms_10$data %>% mutate(status = 'Permuted')) -> real_and_perm_pearson_R_dists
+ggplot(real_and_perm_pearson_R_dists, aes(x = correlation)) + geom_histogram(fill = 'grey50', bins = 100) + labs(x = 'Pearson R', y = 'Count') + xlim(-1,1) + 
+  scale_y_continuous(labels = label_number(suffix = "K", scale = 1e-3)) + 
+  facet_wrap(~status, ncol = 1, scales = 'free_y') + geom_vline(xintercept = 0.95, linewidth = 0.5, linetype = 2) + geom_vline(xintercept = -0.95, linewidth = 0.5, linetype = 2)
+ggsave('real_permuted_dists.pdf', device = 'pdf', height = 8, width = 8, units = 'cm')
+
+## Edge count per protein distribution
+pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(Uniprot1 %in% proteins_in_corr_network_no_isoforms, abs(Pearson_R) >= 0.95) %>% group_by(Uniprot1) %>% summarise(count = n()) %>%
+  rename(Uniprot = Uniprot1) %>% bind_rows(pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(Uniprot2 %in% proteins_in_corr_network_no_isoforms, abs(Pearson_R) >= 0.95) %>% group_by(Uniprot2) %>% summarise(count = n()) %>%
+  rename(Uniprot = Uniprot2)) %>% group_by(Uniprot) %>% summarise(Edges = sum(count)) %>% pull(Edges) %>% ggplot(aes(x = Edges)) + geom_histogram(bins = 100) + labs(y = '#Proteins', x = 'Edge count', subtitle = 'Histogram of # proteins by edge, mean = 174')
+ggsave('Edge_count_by_protein_histogram.pdf', device = 'pdf', units = 'cm', height = 8, width = 8)
+
+
+## Enrichment plot
+make_corr_titration_df(annotation_DB = final_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> all_DB_filtered_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_complexome_CORUM_uniprot_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> Complex_DB_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_pathways_uniprot_matrix_150filt_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> Pathway_DB_filtered_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_hpa_uniprot_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> Localization_DB_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_ppi_uniprot_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> PPI_DB_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_GOBP_uniprot_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> GOBP_DB_filtered_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_GOMF_uniprot_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> GOMF_DB_filtered_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_GOCC_uniprot_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> GOCC_DB_filtered_pos_R_titration_df
+make_corr_titration_df(annotation_DB = final_matrix_reduced_nodes_unfiltered_no_isoforms, cor_type = 'non_abs') -> all_DB_unfiltered_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_pathways_uniprot_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> Pathway_DB_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_GOBP_uniprot_matrix_reduced_nodes_unfiltered_no_isoforms, cor_type = 'non_abs') -> GOBP_DB_unfiltered_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_GOMF_uniprot_matrix_reduced_nodes_unfiltered_no_isoforms, cor_type = 'non_abs') -> GOMF_DB_unfiltered_pos_R_titration_df
+make_corr_titration_df(annotation_DB = Hs_GOCC_uniprot_matrix_reduced_nodes_unfiltered_no_isoforms, cor_type = 'non_abs') -> GOCC_DB_unfiltered_pos_R_titration_df
+
+
+enrichment_over_background_df_pos_R <- data.frame(DB = c('All DBs filtered', 'Localization', 'GOBP filtered', 'GOMF filtered', 'GOCC filtered', 'Pathways filtered', 'PPI', 'Complex', 'All DBs unfiltered', 'GOBP', 'GOMF', 'GOCC', 'Pathways'),
+                                            'pos_R_0.95' = c(all_DB_filtered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.2666591,
+                                                           Localization_DB_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.1806497, 
+                                                           GOBP_DB_filtered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.02546421,
+                                                           GOMF_DB_filtered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.007580675,
+                                                           GOCC_DB_filtered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.008318037,
+                                                           Pathway_DB_filtered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.01919206,
+                                                           PPI_DB_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.002074512,
+                                                           Complex_DB_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.001864967,
+                                                           ##This is unfiltered
+                                                           all_DB_unfiltered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.5528261,
+                                                           GOBP_DB_unfiltered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.3228562,
+                                                           GOMF_DB_unfiltered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.1111648,
+                                                           GOCC_DB_unfiltered_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.181114,
+                                                           Pathway_DB_pos_R_titration_df %>% filter(R_threshold == 0.95) %>% pull(Fraction) %>% unique()/0.08699384))
+
+
+enrichment_over_background_df_pos_R %>% filter(DB %in% c('Complex', 'PPI', 'GOCC filtered', 'GOBP filtered', 'Pathways', 'Localization', 'All DBs filtered', 'GOMF filtered')) %>% 
+  melt() %>% filter(variable == 'pos_R_0.95') %>% ggplot(aes(y = value, x = reorder(DB, value))) + geom_bar(stat = 'identity', fill = '#4575b4') + geom_hline(yintercept = 1, linetype = 2, color = 'black') + labs(y = 'Enrichment') + theme(axis.title.x = element_blank()) -> pos_R_en_bg_ratio_plot
+
+## Representative network examples
+createProteinGraph('BMP1', num_interactors = 10, type = 'corr')
+createProteinGraph('RPL7A', num_interactors = 10, type = 'corr')
+
+save_network_plot(prot_complex = '26S Proteasome complex', source = 'EMBL_Complexome', num_cooperative_prots = 0, anticorrelated_edges = 'Yes', comp_or_path = 'complex')
+save_network_plot(prot_complex = 'KEGG_CITRATE_CYCLE_TCA_CYCLE', source = 'KEGG', num_cooperative_prots = 0, anticorrelated_edges = 'Yes', comp_or_path = 'pathway')
+
+save_network_plot(prot_complex = 'NuA4 histone acetyltransferase complex', source = 'EMBL_Complexome', num_cooperative_prots = 20, anticorrelated_edges = 'Yes', comp_or_path = 'complex')
+save_network_plot(prot_complex = 'Chaperonin-containing T-complex', source = 'EMBL_Complexome', num_cooperative_prots = 36, anticorrelated_edges = 'Yes', comp_or_path = 'complex')
+
+## Bioplex CCT network
+createCooperativeProtein_graph(prot_complex = 'Chaperonin-containing T-complex', source = 'EMBL_Complexome', num_cooperative_prots = 36, comp_or_path = 'complex', r_cutoff = 0.95) -> CCT_graph
+
+CCT_node_size <- c(1,1,1,1,1,1,1,1,1.342925,1.081155,1.03705,0.9777286,0.9777286,0.944062,0.9380229,0.9088048,0.8965837,0.8395705,0.8290822,0.8094193,0.7752409,0.7507518,0.7383738,0.7212396,0.6703268,0.6548053,0.6494961,0.644832,0.6355651,0.6195309,0.6167517,0.5952446,0.58647,0.5837678,0.5748563,0.5686728,0.5686728,0.5550856,0.5497438,0.5482714,0.544279,0.5366599,0.5318444,0.5269293)
+CCT_node_size <- setNames(nm = V(CCT_graph)$name, object = CCT_node_size)
+CCT_node_size
+radian.rescale <- function(x, start=0, direction=1) {
+  c.rotate <- function(x) (x + start) %% (2 * pi) * direction
+  c.rotate(scales::rescale(x, c(0, 2 * pi), range(x)))
+  }
+lab.locs <- radian.rescale(x=1:length(CCT_node_size), direction=-1, start=0)
+
+cct_bioplex_network <- read.csv('CCT_BioPlex_network.csv', sep = ',')
+graph_from_data_frame(cct_bioplex_network %>% select(A.2, B.2), directed = F) -> cct_bioplex_network
+CCT_nodes_not_in_bioplex <- CCT_node_size %>% .[!names(.) %in% V(cct_bioplex_network)$name]
+cct_bioplex_network <- add_vertices(cct_bioplex_network, length(CCT_nodes_not_in_bioplex), name = names(CCT_nodes_not_in_bioplex))
+CCT_members <- V(CCT_graph)$name[1:8]
+CCT_coop_members <- V(CCT_graph)$name[9:44]
+CCT_members %>% cat(sep = ',')
+V(cct_bioplex_network)$color <- ifelse(V(cct_bioplex_network)$name %in% CCT_members, "#4575b4", ifelse(V(cct_bioplex_network)$name %in% CCT_coop_members, "#fdae61", "grey"))
+V(cct_bioplex_network)$size <- CCT_node_size[match(V(cct_bioplex_network)$name, names(CCT_node_size))]
+simplify(cct_bioplex_network) %>% plot(layout = layout_with_graphopt(graph = cct_bioplex_network, charge = .25, spring.length = 1), 
+     vertex.label.cex = 10/12, vertex.label.dist = 1.5, vertex.label.color = 'black', vertex.size = V(cct_bioplex_network)$size * 10,
+     vertex.frame.width = 1/3, vertex.label.family="Helvetica", edge.color = 'grey', 
+     edge.width = 2/3)
+pdf(file = 'CCT_bioplex_network.pdf', width = 6, height = 6)
+dev.off()
+
+## Distribution of cooperative proteins by complex
+ggplot(new_interactors_stats_3_shared_timepoints_R_0.95 %>% select(ComplexName, Source, Cooperative_members) , aes(x = reorder(ComplexName, Cooperative_members), y = Cooperative_members, group = 1)) + 
+  geom_area(fill = 'grey') + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = 'top', legend.title = element_blank()) + 
+  labs(x = 'Complexes', y = '#Cooperative proteins') + 
+  #geom_point(data = new_interactors_stats_3_shared_timepoints %>% filter(row_number() %% 50 == 1)) +
+  geom_point(aes(color = Source)) + scale_color_manual(values = c('#31a354', '#c2e699')) + 
+  geom_label_repel(data = new_interactors_stats_3_shared_timepoints_R_0.95 %>% 
+                     filter(ComplexName %in% c('26S Proteasome complex', 
+                                               '55S ribosome, mitochondrial',
+                                               'Ribosome, cytoplasmic', 
+                                               'RNA polymerase II holoenzyme complex', 
+                                               'Commander complex', 
+                                               'Nuclear pore complex', 
+                                               'Nop56p-associated pre-rRNA complex', 
+                                               'NCOR complex')),
+                   aes(label = ComplexName), min.segment.length = 0.2, box.padding = .5, size = 3, segment.size = 0.1, max.overlaps = 20, label.size = 0.25) -> plot_cooperative_prots_complex
+plot_cooperative_prots_complex
+ggsave('Cooperative_subunits_per_complex_stats_3_shared_timepoints_R_0.95.pdf', device = 'pdf', height = 10, width = 10, units = 'cm')
+
+## Jaccard index heatmap
+
+# Calculate Jaccard Index for each pair of complexes
+for (i in 1:(num_comps - 1)) {
+  for (j in (i + 1):num_comps) {
+    comp1 <- new_interactors_df_stats_3_shared_timepoints_grouped_complexome$ComplexFamily[i]
+    comp2 <- new_interactors_df_stats_3_shared_timepoints_grouped_complexome$ComplexFamily[j]
+    print(comp1)
+    print(comp2)
+    intersection <- intersect(new_interactors_df_3_shared_timepoints_grouped_complexome %>% filter(ComplexFamily == comp1) %>% .$Gene.Symbol,
+                              new_interactors_df_3_shared_timepoints_grouped_complexome %>% filter(ComplexFamily == comp2) %>% .$Gene.Symbol) %>% length()
+    union <- length(unique(c(new_interactors_df_3_shared_timepoints_grouped_complexome %>% filter(ComplexFamily == comp1) %>% .$Gene.Symbol,
+                              new_interactors_df_3_shared_timepoints_grouped_complexome %>% filter(ComplexFamily == comp2) %>% .$Gene.Symbol)))
+    jaccard_index <- intersection / union
+    print(jaccard_index)
+    # Fill the upper triangle of the matrix
+    jaccard_matrix_complexome[comp1, comp2] <- jaccard_index
+  }
+}
+
+jaccard_matrix_complexome[is.na(jaccard_matrix_complexome)] <- 0
+jaccard_matrix_complexome <- jaccard_matrix_complexome + t(jaccard_matrix_complexome)
+diag(jaccard_matrix_complexome) <- 1
+
+rearranged_list <- c(
+  "Brain-specific SWI/SNF ATP-dependent chromatin remodeling complex",
+  "Embryonic stem cell-specific SWI/SNF ATP-dependent chromatin remodeling complex",
+  "GBAF (SWI/SNF) ATP-dependent chromatin remodeling complex",
+  "Muscle cell-specific SWI/SNF ATP-dependent chromatin remodeling complex",
+  "Neural progenitor-specific SWI/SNF ATP-dependent chromatin remodeling complex",
+  "Neuron-specific SWI/SNF ATP-dependent chromatin remodeling complex",
+  "Polybromo-associated SWI/SNF ATP-dependent chromatin remodeling complex",
+  "SWI/SNF ATP-dependent chromatin remodeling complex",
+  "INO80 chromatin remodeling complex",
+  "NuRF chromatin remodeling complex",
+  
+  "GCN5-containing ATAC complex",
+  "PCAF-containing ATAC complex",
+  
+  "CORVET tethering complex",
+  "HOPS tethering complex",
+  
+  
+  "Cytoplasmic exosome complex",
+  "Exosome complex",
+  "Nuclear exosome complex",
+  "Nucleolar exosome complex",
+  
+  "DNA polymerase delta complex",
+  
+  "HBO1-4.1 histone acetyltransferase complex",
+  "HBO1-4.2 histone acetyltransferase complex",
+  "HBO1-5.2 histone acetyltransferase complex",
+  "HBO1-5.3 histone acetyltransferase complex",
+  "NuA4 histone acetyltransferase complex",
+  "TFTC histone acetylation complex",
+  
+  "Histone-lysine N-methyltransferase complex",
+  "Integrator complex",
+  
+  "MBD2/NuRD nucleosome remodeling and deacetylase complex",
+  "MBD3/NuRD nucleosome remodeling and deacetylase complex",
+  "SIN3A histone deacetylase complex",
+  "SIN3B histone deacetylase complex",
+  
+  "40S cytosolic small ribosomal subunit",
+  "60S cytosolic large ribosomal subunit",
+  "26S Proteasome complex",
+  
+  "Chaperonin-containing T-complex"
+)
+
+pheatmap(jaccard_matrix_complexome[rearranged_list, rearranged_list], cluster_rows = F, clustering_distance_rows = 'euclidean',
+         cluster_cols = F, clustering_distance_cols = 'euclidean', clustering_method = 'average',
+         show_rownames = TRUE, show_colnames = FALSE, fontsize_row = 10, treeheight_row = 0,
+         color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(jaccard_scale)), 
+         breaks = jaccard_scale,
+         width=10, height=5, border_color = NA, filename = 'Cooperative_prots_jaccard_index_heatmap_complexome_filtered_for_paper_R_0.95.pdf') -> jaccard_matrix_complexome_for_cooperative_proteins_overlaps
+
+
+```
+
+
+```{r Sup. Fig.3}
+## Observed edges per abs(R)
+make_corr_titration_df(annotation_DB = final_matrix_reduced_nodes_no_isoforms) -> all_DB_filtered_R_titration_df
+all_DB_filtered_R_titration_df$R_threshold[16] <- 0.95
+make_corr_titration_plot(annotation_DB = final_matrix_reduced_nodes_no_isoforms, results_df = all_DB_filtered_R_titration_df) + labs(subtitle = 'All databases filtered') -> all_DB_filtered_titration_plot
+
+ggplot(all_DB_filtered_R_titration_df, aes(x = R_threshold, y=Observed_edges)) + geom_point() + xlim(0.9,1) + scale_y_continuous(limits = c(0,13e5),labels = unit_format(unit = 'K', scale = 1e-3)) + geom_vline(xintercept = 0.95, linetype = 2) + geom_hline(yintercept = 363443, linetype = 2) + labs(x = 'abs(Pearson R)', y = 'Observed edges', subtitle = 'Observed edges per R threshold')-> edge_count_per_abs_R_threshold_plot
+
+## Total number of positive and negative edges in network-
+R_0.95_edge_summary_stats <- data.frame(Type = c('Correlated', 'Anticorrelated'), Edges = c(pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(Pearson_R >=0.95) %>% nrow(),pairwise_prot_corr_3_shared_timepoints_filtered %>% filter(Pearson_R <=-0.95) %>% nrow())) %>% mutate(Fraction = Edges / sum(Edges))
+
+R_0.95_edge_summary_stats
+ggplot(R_0.95_edge_summary_stats, aes(x = Type, y = Edges, fill = Type)) + geom_bar(stat = 'identity') +
+         scale_fill_manual(values = c("#d73027", "#4575b4")) +
+  scale_y_continuous(labels = unit_format(unit = 'K', scale = 1e-3)) + theme(axis.title.y = element_blank(), legend.position =  'none')
+
+## Fraction of correlated and anticorrelated edges by database
+
+rbind(complex_interactors_all_df, pathway_interactors_all_df, location_interactors_all, GO_interactors_all_df, bioplex_pairs_detected) -> annotated_edges_df
+
+annotated_edges_df_no_isoforms_abs_R_0.95 <- annotated_edges_df %>% filter(Uniprot1 %in% proteins_in_corr_network_no_isoforms, Uniprot2 %in% proteins_in_corr_network_no_isoforms) %>% filter(abs(Pearson_R) >= 0.95)
+annotated_edges_df_summary_no_isoforms_abs_R_0.95 <- rbind(annotated_edges_df_no_isoforms_abs_R_0.95 %>% filter(Pearson_R >0) %>% group_by(Edge_type) %>% summarise(Edge_count = n()) %>% mutate(Type = 'Correlated'),annotated_edges_df_no_isoforms_abs_R_0.95 %>% filter(Pearson_R<0) %>% group_by(Edge_type) %>% summarise(Edge_count = n())%>% mutate(Type = 'Anticorrelated'))
+
+annotated_edges_df_summary_no_isoforms_abs_R_0.95 %>%
+  group_by(Edge_type) %>%
+  mutate(Total_count = sum(Edge_count),
+         Edge_fraction = Edge_count / Total_count) %>%
+  ungroup() %>% # Ungroup to avoid issues with further operations
+  select(-Total_count) -> annotated_edges_df_summary_no_isoforms_abs_R_0.95
+
+ggplot(annotated_edges_df_summary_no_isoforms_abs_R_0.95, aes(x = fct_relevel(Edge_type, c('Localization', 'Pathway', 'GOBP', 'GOMF','GOCC', 'PPI', 'Complex')), y = Edge_fraction)) + 
+  geom_bar(stat = 'identity', position = 'stack', aes(fill = Type)) + 
+  scale_fill_manual(values = c("#d73027", "#4575b4")) + 
+  labs(y='Fraction of edges', subtitle = 'Fraction of correlated edges in observed network') + geom_hline(yintercept = 0.6161637, linetype = 2) +
+  theme(axis.title.x = element_blank(), legend.title = element_blank(), legend.position =  'top', axis.text.x  = element_text(size = 10)) -> frac_edges_explained_plot_no_isoforms
+frac_edges_explained_plot_no_isoforms
+ggsave('Frac_correlated_anticorrelated_edges_by_DB_at_abs_R_0.95.pdf', device = 'pdf', units = 'cm', height = 8, width = 16)
+
+## Fraction of network explained as a function of Pearson R
+make_corr_titration_df(annotation_DB = final_matrix_reduced_nodes_no_isoforms, cor_type = 'non_abs') -> all_DB_filtered_pos_R_titration_df
+make_corr_titration_plot(annotation_DB = final_matrix_reduced_nodes_no_isoforms, results_df = all_DB_filtered_pos_R_titration_df, type = 'non_abs') + labs(subtitle = 'All databases filtered') -> all_DB_filtered_pos_R_titration_plot
+all_DB_filtered_pos_R_titration_plot + ylim(0,1) + xlim(0.9,1) + geom_vline(xintercept = 0.95, linetype = 2) 
+
+## Cumulative line plot
+# Create pairwise matrices across the proteome all 20k proteins, i.e if a DB has an edge with another protein will have 1 otherwise 0
+create_pairwise_matrix(Hs_complexome_CORUM_full) -> Hs_complexome_CORUM_uniprot_matrix
+create_pairwise_matrix(bioplex_3 %>% mutate(Members_clean = paste0(Bait.Uniprot, ' ', Prey.Uniprot))) -> Hs_ppi_uniprot_matrix
+create_pairwise_matrix(Hs_GO_terms %>% filter(Source == 'GOBP', Total_members <=150)) -> Hs_GOBP_uniprot_matrix
+create_pairwise_matrix(Hs_GO_terms %>% filter(Source == 'GOMF', Total_members <=150)) -> Hs_GOMF_uniprot_matrix
+create_pairwise_matrix(Hs_GO_terms %>% filter(Source == 'GOCC', Total_members <=150))-> Hs_GOCC_uniprot_matrix
+create_pairwise_matrix(hpa_df_collapsed) -> Hs_hpa_uniprot_matrix
+create_pairwise_matrix(Hs_pathways_all) -> Hs_pathways_uniprot_matrix
+
+#Expand/Fill out the previously created matrices GOBP, GOCC, GOMF are filtered to <=150 terms
+make_pairwise_proteome_matrix(Hs_complexome_CORUM_uniprot_matrix, Source = 'Complex', edge_stats = 'no', reduced_nodes = 'yes', reduced_node_list = proteins_in_corr_network_no_isoforms) -> Hs_complexome_CORUM_uniprot_matrix_reduced_nodes_no_isoforms
+make_pairwise_proteome_matrix(Hs_GOBP_uniprot_matrix, Source = 'GOBP', edge_stats = 'no', reduced_nodes = 'yes', reduced_node_list = proteins_in_corr_network_no_isoforms) -> Hs_GOBP_uniprot_matrix_reduced_nodes_no_isoforms
+make_pairwise_proteome_matrix(Hs_GOCC_uniprot_matrix, Source = 'GOCC', edge_stats = 'no', reduced_nodes = 'yes', reduced_node_list = proteins_in_corr_network_no_isoforms) -> Hs_GOCC_uniprot_matrix_reduced_nodes_no_isoforms
+make_pairwise_proteome_matrix(Hs_GOMF_uniprot_matrix, Source = 'GOMF', edge_stats = 'no', reduced_nodes = 'yes', reduced_node_list = proteins_in_corr_network_no_isoforms) -> Hs_GOMF_uniprot_matrix_reduced_nodes_no_isoforms
+make_pairwise_proteome_matrix(Hs_hpa_uniprot_matrix, Source = 'Localization', edge_stats = 'no', reduced_nodes = 'yes', reduced_node_list = proteins_in_corr_network_no_isoforms) -> Hs_hpa_uniprot_matrix_reduced_nodes_no_isoforms
+make_pairwise_proteome_matrix(Hs_pathways_uniprot_matrix, Source = 'Pathway', edge_stats = 'no', reduced_nodes = 'yes', reduced_node_list = proteins_in_corr_network_no_isoforms) -> Hs_pathways_uniprot_matrix_reduced_nodes_no_isoforms
+make_pairwise_proteome_matrix(Hs_ppi_uniprot_matrix, Source = 'PPI', edge_stats = 'no', reduced_nodes = 'yes', reduced_node_list = proteins_in_corr_network_no_isoforms) -> Hs_ppi_uniprot_matrix_reduced_nodes_no_isoforms
+
+Hs_complexome_CORUM_uniprot_matrix_reduced_nodes_no_isoforms +
+  Hs_GOBP_uniprot_matrix_reduced_nodes_no_isoforms +
+  Hs_GOCC_uniprot_matrix_reduced_nodes_no_isoforms +
+  Hs_GOMF_uniprot_matrix_reduced_nodes_no_isoforms +
+  Hs_hpa_uniprot_matrix_reduced_nodes_no_isoforms +
+  Hs_pathways_uniprot_matrix_reduced_nodes_no_isoforms +
+  Hs_ppi_uniprot_matrix_reduced_nodes_no_isoforms -> final_matrix_reduced_nodes_no_isoforms
+
+# Convert the correlation matrix into binary form
+observed_binary_pearson_corr_matrix <- non_zero_merged_ms_df_3_shared_timepoint_log2_rtm_pearson_corr_matrix[proteins_in_corr_network_no_isoforms, proteins_in_corr_network_no_isoforms]
+observed_binary_pearson_corr_matrix[observed_binary_pearson_corr_matrix >=0.95] <- 1
+observed_binary_pearson_corr_matrix[observed_binary_pearson_corr_matrix <0.95] <- 0
+observed_binary_pearson_corr_matrix <- Matrix(observed_binary_pearson_corr_matrix, sparse = T)
+
+# Multiply the observed_binary_pearson_corr_matrix with the respective DB list
+observed_binary_pearson_corr_matrix*final_matrix_reduced_nodes_no_isoforms -> obs_db_prod_matrix
+# Calculate the numbers of unique increments
+observed_binary_pearson_corr_matrix[lower.tri(observed_binary_pearson_corr_matrix, diag = F)] %>% .[.!=0] %>% length() ## Total_edges in network
+obs_db_prod_matrix[lower.tri(obs_db_prod_matrix, diag = F)] %>% .[.!=0] %>% length() ## Total edges explained, note that this will be higher because of correlated edges
+
+# This is for the cumulative line
+cum_edge_numbers_observed <- c(obs_db_prod_matrix[lower.tri(obs_db_prod_matrix, diag = F)] %>% .[.==1] %>% length(), ## Explained by 1 DBs
+                               obs_db_prod_matrix[lower.tri(obs_db_prod_matrix, diag = F)] %>% .[.==2] %>% length(), ## Explained by 2 DBs
+                               obs_db_prod_matrix[lower.tri(obs_db_prod_matrix, diag = F)] %>% .[.==3] %>% length(), ## Explained by 3 DBs
+                               obs_db_prod_matrix[lower.tri(obs_db_prod_matrix, diag = F)] %>% .[.==4] %>% length(), ## Explained by 4 DBs
+                               obs_db_prod_matrix[lower.tri(obs_db_prod_matrix, diag = F)] %>% .[.==5] %>% length(), ## Explained by 5 DBs
+                               obs_db_prod_matrix[lower.tri(obs_db_prod_matrix, diag = F)] %>% .[.==6] %>% length(), ## Explained by 6 DBs
+                               obs_db_prod_matrix[lower.tri(obs_db_prod_matrix, diag = F)] %>% .[.==7] %>% length()) ## Explained by 7 DBs
+
+# Repeat this for the background network
+final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% length() ## Total possible edges
+final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% .[.!=0] %>% length() ## Total_edges explained in background network
+
+cum_edge_numbers_background <- c(final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% .[.==1] %>% length(), ## Explained by 1 DBs for background 
+                                 final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% .[.==2] %>% length(), ## Explained by 2 DBs for background 
+                                 final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% .[.==3] %>% length(), ## Explained by 3 DBs for background 
+                                 final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% .[.==4] %>% length(), ## Explained by 4 DBs for background 
+                                 final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% .[.==5] %>% length(), ## Explained by 5 DBs for background 
+                                 final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% .[.==6] %>% length(), ## Explained by 6 DBs for background 
+                                 final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% .[.==7] %>% length()) ## Explained by 7 DBs for background
+cum_edge_numbers_background
+
+# Make a dataframe with these, add them in the same order of the edges in the df
+cumulative_line_df <- data.frame(Edge_type = c('GOBP', 'GOCC', 'Localization', 'Pathway', 'GOMF', 'Complex', 'PPI'), observed_network_cum_edges = cum_edge_numbers_observed, background_network_cum_edges = cum_edge_numbers_background) %>% mutate(
+  Cum_edge_count_observed = cumsum(observed_network_cum_edges),
+  Cum_edge_count_background = cumsum(background_network_cum_edges)) %>%
+  mutate(fraction_explained_observed = Cum_edge_count_observed/observed_binary_pearson_corr_matrix[lower.tri(observed_binary_pearson_corr_matrix, diag = F)] %>% .[.!=0] %>% length(), # This is to get the percent explained in the observed network
+         fraction_explained_background = Cum_edge_count_background/final_matrix_reduced_nodes_no_isoforms[lower.tri(final_matrix_reduced_nodes_no_isoforms, diag = F)] %>% length()) # This is to get the background edges explained
+cumulative_line_df %>% rename(Observed = 'fraction_explained_observed', Background = 'fraction_explained_background') %>% melt(id.vars = c('Edge_type', 'observed_network_cum_edges', 'background_network_cum_edges', 'Cum_edge_count_observed', 'Cum_edge_count_background'), measure.vars = c('Observed', 'Background'), variable.name = 'Network_type', value.name = 'Fraction') %>% rename(Observed = 'observed_network_cum_edges', Background = 'background_network_cum_edges') %>%
+  melt(id.vars = c('Edge_type', 'Cum_edge_count_observed', 'Cum_edge_count_background', 'Fraction', 'Network_type'), measure.vars = c('Observed', 'Background'), variable.name = 'Network_type1', value.name = 'Observed_edges') %>% filter(Network_type == Network_type1) %>% select(-Network_type1) %>% rename(Observed = 'Cum_edge_count_observed', Background = 'Cum_edge_count_background') %>% melt(id.vars = c('Edge_type', 'Observed', 'Background', 'Fraction', 'Network_type', 'Observed_edges'), measure.vars = c('Observed', 'Background'), variable.name = 'Network_type1', value.name = 'Cum_edges') %>% filter(Network_type == Network_type1) %>% select(-Network_type1) -> cumulative_line_df_long
+
+
+## Distribution of edges in complexes
+ggplot(Hs_complexome_CORUM_full_edge_df_3_shared_timepoints %>% filter(edge_detected == 'Yes'), aes(x = Pearson_R, fill = Source, ..count..)) + geom_histogram(bins = 100) + theme(legend.position = 'top', legend.title = element_blank()) + scale_fill_manual(values = c('#31a354','#c2e699')) + labs(x = 'Pearson R') -> plot_complex_edges_full_plot
+plot_complex_edges_full_plot
+ggsave('Known_protein_complex_edges_3_shared_timepoints.pdf', device = 'pdf', height = 10, width = 10, units = 'cm')
+
+## Distribution of fraction of complexes detected by number of subunits
+ggplot(Hs_complexome_CORUM, aes(x = Fraction_of_nodes_observed, y = Total_members, color = Source)) + rasterize(geom_point(), dpi = 300)+ theme(legend.position = 'top', legend.title = element_blank()) + scale_color_manual(values = c('#31a354','#c2e699')) + labs(x = 'Fraction detected', y = '#Complex subunits') -> plot_complexes_size_vs_fraction_observed_in_network
+
+## Distribution of Cooperative edges by Complex subunits
+ggplot(new_interactors_stats_3_shared_timepoints_R_0.95, aes(x = Total_members, y = Cooperative_members)) + 
+  rasterize(geom_point(aes(color = Source), alpha = 1), dpi = 300) + scale_y_log10() + scale_x_log10() + 
+  labs(x = '#Complex Subunits', y = '#Cooperative proteins') + 
+  geom_label_repel(data = new_interactors_stats_3_shared_timepoints_R_0.95 %>% 
+                     filter(ComplexName %in% c('26S Proteasome complex', 
+                                               'Ribosome, cytoplasmic', 
+                                               'RNA polymerase II holoenzyme complex', 
+                                               'Commander complex', 
+                                               'Nuclear pore complex', 
+                                               'Nop56p-associated pre-rRNA complex', 
+                                               'NCOR complex')),
+                   aes(label = ComplexName), min.segment.length = 0.2, box.padding = .5, size = 3, segment.size = 0.1, max.overlaps = 20) +
+  theme(legend.position = 'top', legend.title = element_blank()) + scale_color_manual(values = c('#31a354', '#c2e699')) -> plot_cooperative_proteins_by_size
+plot_cooperative_proteins_by_size
+ggsave('Cooperative_subunits_per_complex_3_shared_timepoints_R_0.95.pdf', device = 'pdf', height = 10, width = 10, units = 'cm')
+
+## Distribution of number of complex associations by protein
+ggplot(new_interactors_df_3_shared_timepoints_summary %>% filter(Source == 'EMBL_Complexome'), aes(x = reorder(new_interactor, Count), y = Count, group = 1)) + 
+  geom_area(fill = 'grey') + geom_point(alpha = .5) + 
+  geom_label_repel(data = new_interactors_df_3_shared_timepoints_summary %>% filter(Source == 'EMBL_Complexome', Gene.Symbol %in% c('ZZZ3', 'NES', 'SETD2', 'ARID1A', 'SDHA', 'TCF20')), 
+                   aes(label = Gene.Symbol), min.segment.length = 0.2, box.padding = .5, size = 3, segment.size = 0.1, max.overlaps = 20, label.size = 0.25)+
+  labs(x = 'Proteins', y = '#Complex associations') + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) -> plot_complex_associations_by_protein
+plot_complex_associations_by_protein
+#ggsave('Complex_associations_by_protein_3_shared_timepoints_R_0.95.pdf', height = 10, width = 10, device = 'pdf', units = 'cm')
+
+## 40S Ribosomal subunit graph
+save_network_plot(prot_complex = '40S cytosolic small ribosomal subunit', source = 'EMBL_Complexome', num_cooperative_prots = 5, anticorrelated_edges = 'Yes', comp_or_path = 'complex')
+
+```
+

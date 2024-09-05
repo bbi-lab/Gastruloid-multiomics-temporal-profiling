@@ -1,0 +1,214 @@
+---
+title: "Fig2_SupFig2"
+output: html_document
+date: "2024-09-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(ggrastr)
+library(cowplot)
+library(RColorBrewer)
+library(ggplot2)
+library(ggridges)
+library(ggpmisc)
+library(GGally)
+library(psych)
+library(ggpubr)
+library(reshape2)
+library(cowplot)
+library(umap)
+library(EnvStats)
+library(metR)
+library(conflicted)
+library(pheatmap)
+library(igraph)
+theme_set(theme_cowplot(rel_small = 10/12) + theme(axis.line = element_line(linewidth = .25), axis.ticks = element_line(linewidth = .25)))
+#setwd("/path/to/data")
+
+```
+
+```{r Functions}
+
+MS_DE_volcano_plotter <- function(de_df, contrast, n = 10, gene_list = list()) {
+  de_df <- de_df %>% filter(comparison == contrast)
+  gene_list <- de_df %>% filter(comparison == contrast, GeneSymbol %in% gene_list) %>% pull(GeneSymbol)
+  ggplot(de_df, aes(x = log2FC, y = neglogPVal)) + rasterise(geom_point(color = 'grey', shape = 16), dpi = 300) +
+    rasterize(geom_point(data = de_df %>% filter(log2FC > 1, neglogPVal > -log10(.05)), aes(x = log2FC, y = neglogPVal), color = "#d7191c", shape = 16), dpi = 300) +
+  rasterize(geom_point(data = de_df %>% filter(log2FC < -1, neglogPVal > -log10(.05)), aes(x = log2FC, y = neglogPVal), color = "#2c7bb6", shape = 16), dpi = 300) + 
+    geom_vline(xintercept = 1, color="black", linetype = 2, size = .25) +
+    geom_vline(xintercept = -1, color="black", linetype = 2, size = .25) +
+    geom_hline(yintercept = -log10(.05), color="black", linetype = 2, size = .25) +
+    draw_text(c(de_df %>% filter(log2FC > 1, neglogPVal > -log10(.05)) %>% nrow(),
+                de_df %>% filter(log2FC < -1, neglogPVal > -log10(.05)) %>% nrow()), 
+              x = c(7,-7), y = c(5,5)) + lims(x = c(-25,25), y = c(0,5)) +
+    geom_label_repel(data = de_df %>% filter(GeneSymbol %in% gene_list), size = 3,
+                     aes(x = log2FC, y = neglogPVal, label = GeneSymbol),
+                     max.overlaps = 20, box.padding = .25, min.segment.length = .1) + 
+    #geom_label_repel(data = rbind(de_df %>% filter(log2FC > 1, neglogPVal > -log10(0.05)) %>%
+    #                                arrange(-neglogPVal, -log2FC) %>% head(n),
+    #                              de_df %>% filter(log2FC < -1, neglogPVal > -log10(0.05)) %>%
+    #                                arrange(-neglogPVal, log2FC) %>% head(n)), 
+    #                 aes(x = log2FC, y = neglogPVal, label = GeneSymbol),
+    #                 max.overlaps = 50, box.padding = .25, min.segment.length = .1) + 
+    labs(y = '-log10(p.adj)', subtitle = contrast)
+  }
+
+bar_plot_gene_sets <- function(df, gene_list) {
+  gene_list <- str_split(gene_list, pattern = ' ') %>% unlist()
+  df <- df %>% filter(Gene.Symbol %in% gene_list)
+  print(df$Gene.Symbol %>% unique() %>% length())
+  ggplot(df, aes(x = Gene.Symbol, y = gmean, fill = contrast, group = contrast)) + geom_bar(position = 'dodge', stat = 'identity') +
+    scale_fill_manual(values = c('#abd9e9', '#fdae61', '#d7191c'), breaks = c('Naive', 'Early', 'Late')) + geom_point(position = position_dodge(.9)) +
+    geom_errorbar(aes(ymin=gmean-abs(gsd), ymax=gmean+abs(gsd)), position = position_dodge(.9), linetype=1, width = 0.1, linewidth = 0.4)+ ylim(-8,8) +
+    labs(y = 'log2 abundance ratio (relative to primed ESCs)') + theme(legend.title = element_blank(), legend.position = 'top', axis.text.x = element_text(vjust = 0.5, hjust = 1, angle = 90), axis.title.x = element_blank()) 
+    }
+
+
+make_GO_dot_plot <- function(GO_df, contrast, count) {
+  GO_df %>% filter(comparison == contrast) -> GO_df
+  combined_go_df <- rbind(GO_df %>% filter(sample == 'up') %>% arrange(p.adjust) %>% head(count),
+                          GO_df %>% filter(sample == 'down') %>% arrange(p.adjust) %>% head(count))
+  combined_go_df
+  ggplot(combined_go_df, aes(x = reorder(Description, desc(sample)), y = sample, color = p.adjust, size = Count)) +
+    geom_point() + #geom_bar(stat = 'identity') + #coord_capped_cart(bottom = 'both', right = 'both') +
+    coord_flip() + scale_size_continuous(limits=c(0,250),breaks=c(10,50,100,200), range = c(1,5)) +
+    scale_color_gradientn(colors = rev(brewer.pal(3, 'YlOrRd')), limits = c(0.001, 0.05), oob = scales::squish) +
+    labs(subtitle = contrast) + theme_cowplot(rel_small = 10/12) + 
+    theme(axis.title.y = element_blank(), axis.line = element_line(linewidth = 0.25), axis.text.x = element_text(angle = 90, hjust = .5),
+          axis.ticks = element_line(linewidth = 0.25), legend.title = element_text(size = 12), legend.text = element_text(size = 10),
+          axis.title.x = element_blank(), plot.title = element_text(size = 12, face = 'plain')) -> dot_plot
+  return(dot_plot)
+}
+
+
+# Function to create scatter plots and annotate quadrants
+create_Hs_Mm_fc_scatter_plot <- function(data, add_subcellular_anntation, location) {
+  h_cols <- grep("^h_|^hH", names(data), value = TRUE)
+  m_cols <- grep("^m_", names(data), value = TRUE)
+  print(h_cols)
+  print(m_cols)
+  data %>% colnames() %>% print()
+  if (add_subcellular_anntation == 'yes'){
+    location_proteins <- hpa_df_collapsed %>% filter(Subcellular_main_location == location) %>% pull(Members_clean) %>% unlist() %>% str_split(pattern = ' ') %>% unlist()}
+  # Create an empty list to store plots
+  plot_list <- list()
+  # Create scatter plots for each combination
+  for (h_col in h_cols) {
+    for (m_col in m_cols) {
+     plot_data <- data %>% select(Uniprot, h_col, m_col)
+     print(colnames(plot_data))
+     Q1 <- plot_data %>% filter(.data[[h_col]] >=1, .data[[m_col]] >=1) %>% nrow()
+     Q2 <- plot_data %>% filter(.data[[h_col]] >=1, .data[[m_col]] <=-1) %>% nrow()
+     Q3 <- plot_data %>% filter(.data[[h_col]] <=-1, .data[[m_col]] <=-1) %>% nrow()
+     Q4 <- plot_data %>% filter(.data[[h_col]] <=-1, .data[[m_col]] >=1) %>% nrow()
+     #cat("h_col:", h_col, "m_col:", m_col, "\n")
+     #cat("Q1:", Q1, "Q2:", Q2, "Q3:", Q3, "Q4:", Q4, "\n")
+     # Create ggplot and add to the list
+     plot <- ggplot(plot_data %>% filter(abs(.data[[h_col]]) >=1, abs(.data[[m_col]]) >=1) , aes_string(x = m_col, y = h_col)) +
+       rasterise(geom_point(alpha = .1), dpi = 300) + 
+       stat_cor(aes(label = ..r.label..)) + lims(x = c(-10,10), y = c(-7,7)) +
+       geom_hline(yintercept = 0, linetype = 'dashed', color = 'red') +
+       geom_vline(xintercept = 0, linetype = 'dashed', color = 'red') +
+       annotate("text", x = 5, y = 5,label = paste("Q1:", Q1)) +
+       annotate("text", x = -5, y = 5,label = paste("Q2:", Q2)) +
+       annotate("text", x = -5, y = -5,label = paste("Q3:", Q3)) +
+       annotate("text", x = 5, y = -5,label = paste("Q4:", Q4))
+     if (add_subcellular_anntation == 'yes') {
+         plot <- plot + rasterize(geom_point(data = plot_data %>% filter(abs(.data[[h_col]]) >=1, abs(.data[[m_col]]) >=1) %>% filter(Uniprot %in% location_proteins), alpha = .5, color = 'yellow'), dpi = 300)}
+     plot_list[[paste0(h_col, "_vs_", m_col)]] <- plot
+    }
+    }
+  # Arrange and display the plots using cowplot
+  plot_grid(plotlist = plot_list, ncol = length(h_cols))
+}
+
+```
+
+```{r Fig 2 plots}
+## Heatmap
+pheatmap(merged_ms_df_clustering %>% column_to_rownames('Protein.Id') %>% select(-cluster) %>% select(contains('hNaiveH9'), contains('hPrimedH9'), contains('hPrimedRUES2'), contains('hEarly'), contains('hLate'), starts_with('m')), cluster_rows = hc_prots, cluster_cols = F, show_rownames = F, show_colnames = F, color = colorRampPalette(c('#ffffcc', '#41b6c4', '#253494'))(length(color_scale)), 
+           breaks = color_scale, annotation_col = sample_groups, annotation_row = annotation_clusters , cutree_rows = 10,
+           annotation_colors = list(Species = c(human = "#2E3192", mouse = "#00AEEF"),
+                                    Replicate = c(rep1 = '#c51b7d', rep2 = '#e9a3c9', rep3 = '#fde0ef'),
+                                    Stage = c(Naive = '#abd9e9',Primed= '#2c7bb6', Early='#fdae61', Late='#d7191c'),
+                                    correct_cluster = setNames(object = brewer.pal(10,"Spectral"), nm = annotation_clusters$correct_cluster %>% unique())), legend = FALSE, angle_col = 90,
+         filename = 'corrected_merged_ms_scaled_heatmap_pearson_complete.png', width=4, height=8)
+
+## GOBP dotplot
+
+ggplot(prot_cluster_go_df_corrected %>% filter(ONTOLOGY =='BP') %>% 
+         filter(!str_detect(Description, 'trans') & 
+                  !str_detect(Description, 'alpha') & 
+                  !str_detect(Description, 'modi') &
+                  !str_detect(Description, 'cata') &
+                  !str_detect(Description, 'radi')) %>% arrange(correct_cluster, p.adjust, ONTOLOGY) %>% group_by(correct_cluster, ONTOLOGY) %>% top_n(-5, p.adjust), 
+       aes(x = factor(correct_cluster), y = reorder(Description, -as.numeric(correct_cluster)), size = Count, color = p.adjust)) + geom_point() + labs(x = 'Cluster number', y = '') +
+  scale_color_gradientn(colors = rev(brewer.pal(3, 'YlOrRd')), limits = c(0.001, 0.05), oob = scales::squish) + scale_size_continuous(limits=c(0,1000), breaks=c(10,50,100,200), range = c(1,5))
+
+## Volcano plots
+
+MS_DE_volcano_plotter(de_prots_df, contrast = 'Hs_H9_pvn', gene_list = c('SOX2', 'NANOG', 'SUSD2', 'UTF1')) -> volc_plot1
+MS_DE_volcano_plotter(de_prots_df, contrast = 'Hs_RUES2_evp', gene_list = c('SOX2', 'TBXT', 'CDX2', 'UTF1')) -> volc_plot2
+MS_DE_volcano_plotter(de_prots_df, contrast = 'Hs_RUES2_lve', gene_list = c('PAX3', 'TBX6', 'TBXT', 'NCAM1', 'EBF3', 'WNT8A', 'MEIS1')) -> volc_plot3
+
+MS_DE_volcano_plotter(de_prots_df, contrast = 'Hs_RUES2pvH9p') -> volc_plot4
+
+MS_DE_volcano_plotter(de_prots_df, contrast = 'Mm_pvn', gene_list = list('Sox2', 'Klf4', 'Tbx3', 'Nanog', 'Fgf2', 'Dnmt3a', 'Dnmt3b', 'Wnt3', 'Sox3')) -> volc_plot5
+MS_DE_volcano_plotter(de_prots_df, contrast = 'Mm_evp', gene_list = list('Sox3', 'Fgf2', 'Tfap2c', 'Bmp7', 'Ecm1')) -> volc_plot6
+MS_DE_volcano_plotter(de_prots_df, contrast = 'Mm_lve', gene_list = list('Bmp5', 'Sox17', 'Hoxb4', 'Gpa33', 'Dppa4')) -> volc_plot7
+
+volc_plot_list <- list(volc_plot1, volc_plot2, volc_plot3, volc_plot4, volc_plot5, volc_plot6, volc_plot7)
+for (i in seq_along(volc_plot_list)) {
+  ggsave(filename = paste0("DE_volc_plot", i, ".pdf"), plot = volc_plot_list[[i]], width = 10, height = 10, device = 'pdf', units = 'cm')
+}
+
+
+## Bar plots
+
+bar_plot_gene_sets(Hs_ms_bar_plots_data, 'CDX1 PAX3 POU5F1') + labs(subtitle = 'Pluripotency markers') + ylim(-15,30)
+ggsave('Pluripotency_markers.pdf', device = 'pdf', units = 'cm', height = 10, width = 3.5)
+
+bar_plot_gene_sets(Hs_ms_bar_plots_data, 'ACLY ACO1 ACO2 CS DLAT DLD DLST FH IDH1 IDH2 IDH3A IDH3B IDH3G MDH1 MDH2 OGDH OGDHL PC PCK1 PCK2 PDHA1 PDHA2 PDHB SDHA SDHB SDHC SDHD SUCLA2 SUCLG1 SUCLG2 SUCLG2P2') + labs(subtitle = 'TCA cycle')
+ggsave('TCA_cycle.pdf', device = 'pdf', units = 'cm', height = 10, width = 13.636)
+
+bar_plot_gene_sets(Hs_ms_bar_plots_data, 'ALDOA ALDOB ALDOC DERA FBP1 FBP2 G6PD GPI H6PD PFKL PFKM PFKP PGD PGLS PGM1 PGM2 PRPS1 PRPS1L1 PRPS2 RBKS RPE RPEL1 RPIA TALDO1 TKT TKTL1 TKTL2') + labs(subtitle = 'Pentose phosphate pathway')
+ggsave('Pentose_phosphate_pathway.pdf', device = 'pdf', units = 'cm', height = 10, width = 9.253)
+
+bar_plot_gene_sets(Hs_ms_bar_plots_data, 'ATP12A ATP4A ATP4B ATP5F1A ATP5F1B ATP5F1C ATP5F1D ATP5F1E ATP5MC1 ATP5MC1P5 ATP5MC2 ATP5MC3 ATP5ME ATP5MF ATP5MG ATP5PB ATP5PD ATP5PF ATP5PO ATP6AP1 ATP6V0A1 ATP6V0A2 ATP6V0A4 ATP6V0B ATP6V0C ATP6V0D1 ATP6V0D2 ATP6V0E1 ATP6V0E2 ATP6V1A ATP6V1B1 ATP6V1B2 ATP6V1C1 ATP6V1C2 ATP6V1D ATP6V1E1 ATP6V1E2 ATP6V1F ATP6V1G1 ATP6V1G2 ATP6V1G3 ATP6V1H COX10 COX11 COX15 COX17 COX4I1 COX4I2 COX5A COX5B COX6A1 COX6A2 COX6B1 COX6B2 COX6C COX6CP3 COX7A1 COX7A2 COX7A2L COX7B COX7B2 COX7C COX8A COX8C CYC1 LHPP MT-ATP6 MT-ATP8 MT-CO1 MT-CO2 MT-CO3 MT-CYB MT-ND1 MT-ND2 MT-ND3 MT-ND4 MT-ND4L MT-ND5 MT-ND6 NDUFA1 NDUFA10 NDUFA11 NDUFA2 NDUFA3 NDUFA4 NDUFA4L2 NDUFA5 NDUFA6 NDUFA7 NDUFA8 NDUFA9 NDUFAB1 NDUFB1 NDUFB10 NDUFB2 NDUFB3 NDUFB4 NDUFB5 NDUFB6 NDUFB7 NDUFB8 NDUFB9 NDUFC1 NDUFC2 NDUFS1 NDUFS2 NDUFS3 NDUFS4 NDUFS5 NDUFS6 NDUFS7 NDUFS8 NDUFV1 NDUFV2 NDUFV3 PPA1 PPA2 SDHA SDHB SDHC SDHD TCIRG1 UQCR10 UQCR10P1 UQCR11 UQCRB UQCRC1 UQCRC2 UQCRFS1 UQCRH UQCRHL UQCRQ
+') + labs(subtitle = 'Oxidative Phosphorylation')
+
+ggsave('OxPhox_barplot.pdf', device = 'pdf', units = 'cm', height = 10, width = 40)
+
+
+
+```
+
+
+```{r Sup. Fig. 2 plots}
+
+## DE heatmap
+Hs_DE_gene_df <- read.csv('../Hs_DE_gene_summary.txt', sep = '\t')
+ggplot(melt(Hs_DE_gene_df), aes(x = reorder(Sample, variable), y = variable, fill = (value))) + 
+  geom_tile() + labs(fill = 'DE proteins') + scale_x_discrete(limits = c('hNaiveH9', 'hPrimedH9', 'hPrimedRUES2','hEarly', 'hLate')) +
+  scale_fill_gradientn(colors = brewer.pal(9, "Blues"),  na.value = "grey10", limits = c(1, 7000)) + theme_cowplot(rel_small = 10/12) +
+  theme(axis.line = element_blank(), axis.title = element_blank(), legend.title = element_text(size = 12), legend.text = element_text(size = 8), legend.position = 'top', 
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), axis.ticks = element_line(linewidth = 0.25))
+ggsave('Hs_rerun_DE_prots_heatmap.pdf', device = 'pdf', units = 'cm', height = 10, width = 10)
+
+
+## Transition GO_dot_plots
+plot_grid(make_GO_dot_plot(GO_de_df, 'Hs_H9_pvn', 5), make_GO_dot_plot(GO_de_df, 'Hs_RUES2_evp', 5), make_GO_dot_plot(GO_de_df, 'Hs_RUES2_lve', 5), align = 'hv', ncol = 1)
+ggsave('Hs_transitions_GO_dotplots.pdf', units = 'cm', device = 'pdf', height = 30, width = 13)
+
+
+## Mouse DE plots already in main fig
+
+## Species comparison scatter plots
+create_Hs_Mm_fc_scatter_plot(merged_ms_df_raw %>% select(Uniprot, h_pvn, m_pvn,h_evp, m_evp, h_lve, m_lve), add_subcellular_anntation = 'yes', location = 'Mitochondria')
+
+
+```
+
